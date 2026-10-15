@@ -17,11 +17,56 @@ on:
           - full          # 完整分析（股票+大盘）
           - market-only   # 仅大盘复盘
           - stocks-only   # 仅股票分析
+          - screening     # 全市场候选股
+          - hotspots      # 热点板块
+          - strategy      # Agent 策略分析
+          - backtest      # 历史报告回测
+          - etf-rotation  # ETF 轮动与规则回测
+          - data-check    # 不调用模型的数据/通知配置检查
+      stocks:
+        description: '本次股票代码，逗号分隔；留空使用原自选股（最多 20 只）'
+        type: string
+        required: false
+      screening_strategy:
+        description: '全市场选股策略'
+        type: choice
+        default: balanced_alpha
+        options:
+          - balanced_alpha
+          - blue_chip_income
+          - capital_heat
+          - dual_low
+          - low_volatility_quality
+          - momentum_quality
+          - oversold_reversal
+          - quality_value
+          - shrink_pullback
+          - volume_breakout
+      max_results:
+        description: '候选股数量（1–10）；不是 API 调用次数上限'
+        type: choice
+        default: '3'
+        options: ['1', '3', '5', '10']
+      agent_skills:
+        description: '策略模式技能，逗号分隔；留空使用 Repository variable 或默认技能'
+        type: string
+        required: false
+      extras:
+        description: 'full 模式附加热点和全市场选股'
+        type: boolean
+        default: true
+      notify:
+        description: '推送报告（data-check 永不发送）'
+        type: boolean
+        default: true
       force_run:
         description: '强制运行（跳过交易日检查）'
         required: false
         default: false
         type: boolean
+
+permissions:
+  contents: read
 
 # 并发控制：同一时间只运行一个分析任务
 concurrency:
@@ -35,7 +80,7 @@ jobs:
     # 推荐位置仍是 Settings -> Secrets and variables -> Actions -> Repository variables。
     environment: STOCK_LIST
     # 添加超时限制，防止任务卡死
-    timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '30') }}
+    timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '60') }}
     
     steps:
       - name: 随机延迟（避免固定时间访问）
@@ -43,6 +88,8 @@ jobs:
       
       - name: 检出代码
         uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       
       - name: 设置 Python 环境
         uses: actions/setup-python@v6
@@ -60,8 +107,47 @@ jobs:
         run: |
           mkdir -p data logs reports
       
+      - name: 恢复可选历史快照
+        id: history-cache
+        if: vars.ACTIONS_PERSIST_HISTORY == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: data/actions-state/stock_analysis.db
+          key: analysis-history-v1-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            analysis-history-v1-${{ github.ref_name }}-
+
+      - name: 校验并恢复历史数据库
+        if: vars.ACTIONS_PERSIST_HISTORY == 'true' && steps.history-cache.outputs.cache-matched-key != ''
+        run: python -m scripts.actions_report --state restore
+
       - name: 执行股票分析
+        id: analysis
         env:
+          ACTIONS_MODE: ${{ github.event.inputs.mode || 'full' }}
+          ACTIONS_STOCKS: ${{ github.event.inputs.stocks }}
+          ACTIONS_FORCE_RUN: ${{ github.event.inputs.force_run || 'false' }}
+          ACTIONS_NOTIFY: ${{ github.event_name != 'workflow_dispatch' || inputs.notify }}
+          ACTIONS_DAILY_EXTRAS: ${{ github.event_name == 'schedule' && (vars.ACTIONS_DAILY_EXTRAS || 'true') || github.event.inputs.extras || 'false' }}
+          ACTIONS_SCREENING_STRATEGY: ${{ github.event.inputs.screening_strategy || vars.ACTIONS_SCREENING_STRATEGY || 'balanced_alpha' }}
+          ACTIONS_MAX_RESULTS: ${{ github.event.inputs.max_results || vars.ACTIONS_MAX_RESULTS || '3' }}
+          ACTIONS_TASK_TIMEOUT_SECONDS: ${{ vars.ACTIONS_TASK_TIMEOUT_SECONDS || '900' }}
+          DATABASE_PATH: ./data/stock_analysis.db
+          AGENT_MODE: 'false'
+          AGENT_ARCH: ${{ vars.AGENT_ARCH || 'single' }}
+          ACTIONS_AGENT_SKILLS: ${{ github.event.inputs.agent_skills || vars.AGENT_SKILLS || 'bull_trend,shrink_pullback' }}
+          AGENT_MAX_STEPS: ${{ vars.AGENT_MAX_STEPS || '6' }}
+          BACKTEST_ENABLED: ${{ vars.BACKTEST_ENABLED || 'true' }}
+          BACKTEST_EVAL_WINDOW_DAYS: ${{ vars.BACKTEST_EVAL_WINDOW_DAYS || '10' }}
+          BACKTEST_MIN_AGE_DAYS: ${{ vars.BACKTEST_MIN_AGE_DAYS || '14' }}
+          ETF_ROTATION_POOL: ${{ vars.ETF_ROTATION_POOL }}
+          ETF_ROTATION_SAFE_ASSET: ${{ vars.ETF_ROTATION_SAFE_ASSET }}
+          ETF_ROTATION_LOOKBACK_DAYS: ${{ vars.ETF_ROTATION_LOOKBACK_DAYS || '60' }}
+          ETF_ROTATION_TOP_N: ${{ vars.ETF_ROTATION_TOP_N || '2' }}
+          ETF_ROTATION_REBALANCE: ${{ vars.ETF_ROTATION_REBALANCE || 'weekly' }}
+          ETF_ROTATION_SWITCH_BUFFER_PCT: ${{ vars.ETF_ROTATION_SWITCH_BUFFER_PCT || '2' }}
+          ETF_ROTATION_COST_BPS: ${{ vars.ETF_ROTATION_COST_BPS || '10' }}
+          ETF_ROTATION_BACKTEST_YEARS: ${{ vars.ETF_ROTATION_BACKTEST_YEARS || '8' }}
           # ==========================================
           # AI 配置
           # ==========================================
@@ -472,7 +558,7 @@ jobs:
           fi
 
           # 判断运行模式
-          MODE="${{ github.event.inputs.mode || 'full' }}"
+          MODE="$ACTIONS_MODE"
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"
@@ -544,22 +630,24 @@ jobs:
           echo "=========================================="
           echo ""
           
-          # 构建命令行参数
-          FORCE_RUN_ARG=""
-          if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
-            FORCE_RUN_ARG="--force-run"
-            echo "⚡ 已启用强制运行模式（跳过交易日检查）"
+          python -m scripts.actions_report
+
+      - name: 创建可选历史快照
+        id: history-backup
+        if: always() && vars.ACTIONS_PERSIST_HISTORY == 'true' && steps.analysis.outcome != 'skipped'
+        run: |
+          python -m scripts.actions_report --state backup
+          if [ -f data/actions-state/stock_analysis.db ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
-          # 执行分析
-          if [ "$MODE" = "market-only" ]; then
-            python main.py --market-review $FORCE_RUN_ARG
-          elif [ "$MODE" = "stocks-only" ]; then
-            python main.py --no-market-review $FORCE_RUN_ARG
-          else
-            python main.py $FORCE_RUN_ARG
-          fi
-      
+      - name: 保存可选历史快照
+        if: always() && steps.history-backup.outputs.ready == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: data/actions-state/stock_analysis.db
+          key: analysis-history-v1-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
         if: always()
