@@ -103,10 +103,11 @@ def screening_run(monkeypatch):
     monkeypatch.setattr(ranker, "_call_llm", call_llm)
     service = screening_service.ScreeningService(Config(screening_enabled=True), db_manager=database)
 
-    def run(max_results=1):
+    def run(max_results=1, research_limit=None):
         return service.screen(
             strategy=strategy.name, market="cn", max_results=max_results,
             progress_callback=lambda progress, message: state["calls"].append(("progress", progress, None)),
+            **({"research_limit": research_limit} if research_limit is not None else {}),
         )
 
     yield SimpleNamespace(run=run, state=state, runtime=runtime, database=database, snapshot=snapshot)
@@ -224,6 +225,19 @@ def test_pre_rank_queries_respect_existing_candidate_cap(screening_run):
     fourth = next(candidate for candidate in _prompt_candidates(prompt) if candidate["code"] == "000004")
     assert _prompt_evidence(fourth, "news")["status"] == "not_collected"
     assert "未采集、无结果或查询失败均不代表风险已排除" in prompt
+
+
+def test_actions_expands_pre_rank_research_and_reuses_evidence_for_all_selected(screening_run):
+    response = screening_run.run(max_results=4, research_limit=12)
+    candidates = _prompt_candidates(screening_run.state["prompts"][0])
+    fourth = next(candidate for candidate in candidates if candidate['code'] == '000004')
+    assert _prompt_evidence(fourth, 'news')['items'][0]['title'] == 'news 000004 v1'
+    assert response['dsa_enrichment']['requested_count'] == 4
+    assert response['dsa_enrichment']['enriched_count'] == 4
+    for candidate in response['candidates']:
+        code = candidate['code']
+        assert screening_run.state['calls'].count(('news', code, 3)) == 1
+        assert screening_run.state['calls'].count(('event', code, 3)) == 1
 
 
 def test_factor_fallback_keeps_news_queries_after_selection(screening_run):
