@@ -60,6 +60,16 @@ def test_missing_prices_and_shortfall_remain_visible_in_partial_report():
     assert '未取得可核验材料' in content
 
 
+def test_intraday_bar_is_excluded_without_using_its_incomplete_ohlc():
+    rows = bars() + [{"date": "2026-10-16", "high": None, "low": None, "close": 999}]
+    plan = technical_plan(rows, "source", date(2026, 10, 15), incomplete_date=date(2026, 10, 16))
+    assert plan["as_of"] == "2026-10-15" and plan["entry"] == 10
+    assert plan["target"] == 13
+    rows.append({"date": "2026-10-17", "high": 11, "low": 9, "close": 10})
+    assert technical_plan(rows, "source", date(2026, 10, 15),
+                          incomplete_date=date(2026, 10, 16))["status"] == "无法测算"
+
+
 def test_complete_research_count_is_informational_but_partial_count_is_not():
     data = {"ranking_mode": "llm", "candidates": [{"code": "600001"}],
             "degradation": ['DSA provider context applied 12 of 12 candidates']}
