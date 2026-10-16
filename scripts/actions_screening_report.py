@@ -131,6 +131,8 @@ def candidate_summary(candidate: dict, index: int, cell, today: date) -> list[st
     plan = candidate.get("technical_plan") or {}
     lines = ["", f"## {index}. {cell(candidate.get('name'))}（{cell(candidate.get('code'))}）", ""]
     reason = candidate.get("llm_thesis") or candidate.get("reason") or "入选理由缺失"
+    if str(reason).startswith("本地后置评分"):
+        reason = "因子筛选入围，模型未提供入选理由，需复核。"
     lines.append(f"- 理由：{cell(reason)}")
     price = number(quote_data.get("price"))
     change = number(quote_data.get("change_pct"))
