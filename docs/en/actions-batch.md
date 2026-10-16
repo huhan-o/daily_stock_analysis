@@ -21,6 +21,9 @@ Repository variables:
 
 - `ACTIONS_DAILY_EXTRAS=true`, `ACTIONS_SCREENING_STRATEGY=balanced_alpha`, `ACTIONS_MAX_RESULTS=10`: scheduled extras, strategy and candidate count. Shortfalls are reported without padding or duplicate stocks.
 - `LLM_TIMEOUT_SEC=240`, `LLM_MAX_TOKENS=6144`: Actions screening request timeout and output budget. Timed-out paid calls are not automatically retried; factor fallback remains explicit.
+- `LLM_RANKING_PROMPT_MAX_CHARS=64000`: Actions input character budget covering all 12 researched candidates; non-Actions defaults to 24000. Truncation remains explicit.
+- `SNAPSHOT_SOURCE_PRIORITY=em_datacenter,sina,efinance,akshare_em`: prefer the data-center source verified in hosted runs while retaining fallbacks. A configured Tushare token prepends tushare unless this variable explicitly overrides the order.
+- Intraday price plans exclude today's unfinished bar and require the latest completed trading session; invalid, stale or missing completed bars still produce no plan.
 - `ACTIONS_TASK_TIMEOUT_SECONDS=900` (60–1800): per-task budget; hotspots are capped at 180 seconds. `ANALYSIS_TIMEOUT_MINUTES` defaults to 60 for the entire job, including setup; existing overrides still apply.
 - `AGENT_SKILLS=bull_trend,shrink_pullback`, `AGENT_MAX_STEPS=6`, `AGENT_ARCH=single`: manual Agent defaults. Step limits are not token/cost guarantees. Advanced multi mode needs separate compatibility/cost checks.
 - `BACKTEST_ENABLED=true`, `BACKTEST_EVAL_WINDOW_DAYS=10`, `BACKTEST_MIN_AGE_DAYS=14`, and existing `ETF_ROTATION_*` variables reuse the application's configuration.
