@@ -16,6 +16,8 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from scripts.actions_screening_report import attach_technical_plans, candidate_details
+
 MODES = (
     "full", "stocks-only", "market-only", "screening", "hotspots",
     "strategy", "backtest", "etf-rotation", "data-check",
@@ -54,7 +56,8 @@ def stock_override() -> list[str]:
 def cell(value) -> str:
     if value is None or value == "":
         return "未提供"
-    return html.escape(str(value)).replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+    text = html.escape(str(value)).replace("\n", " ").replace("\r", " ")
+    return re.sub(r"([\\|\[\]*_`])", r"\\\1", text)
 
 
 def diagnostics(data: dict) -> list[str]:
@@ -67,10 +70,20 @@ def diagnostics(data: dict) -> list[str]:
     return lines
 
 
-def render_screening(data: dict) -> tuple[str, int]:
+def render_screening(data: dict, requested: int | None = None) -> tuple[str, int]:
     candidates = data.get("candidates") or []
-    degraded = any(data.get(key) for key in ("warnings", "degradation", "source_errors", "llm_failure_reason"))
+    def actionable(value):
+        match = re.fullmatch(r"DSA provider context applied (\d+) of (\d+) candidates", str(value))
+        return not match or match[1] != match[2]
+
+    degraded = any(actionable(value) for key in ("warnings", "degradation") for value in data.get(key) or [])
+    degraded = degraded or bool(data.get("source_errors") or data.get("llm_failure_reason"))
     degraded = degraded or data.get("ranking_mode") != "llm" or not candidates
+    shortfall = requested is not None and len(candidates) < requested
+    incomplete = any((item.get("technical_plan") or {}).get("status") != "条件式技术测算"
+                     for item in candidates) if requested is not None else False
+    incomplete = incomplete or bool((data.get("dsa_enrichment") or {}).get("warnings"))
+    degraded = degraded or shortfall or incomplete
     lines = [
         "# 全市场候选股", "", "仅供研究，不会下单，也不会自动替换自选股。",
         f"策略：{cell(data.get('strategy'))}；排序：{cell(data.get('ranking_mode'))}；"
@@ -85,6 +98,15 @@ def render_screening(data: dict) -> tuple[str, int]:
         lines.append("| " + " | ".join(cell(v) for v in fields) + " |")
     if not candidates:
         lines.append("\n没有可用候选；不代表市场没有机会。")
+    if requested is not None:
+        lines.extend(["", f"请求 {requested} 只，实际返回 {len(candidates)} 只。"
+                      + ("数量不足：保留筛选标准，不用重复股票或不合格股票补数。" if shortfall else "")])
+    for key, label in (("llm_market_view", "模型市场判断"), ("llm_selection_logic", "模型选股逻辑"),
+                       ("llm_portfolio_risk", "组合风险"), ("portfolio_concentration_notes", "行业集中度提示")):
+        lines.extend(["", f"{label}：{cell(data.get(key))}"])
+    lines.extend(["", "以下模型判断属于推断；原始行情和新闻来源列在各股详情中。价格是技术情景值，不是收益预测。"])
+    for index, item in enumerate(candidates, 1):
+        lines.extend(candidate_details(item, index, cell, datetime.now(ZoneInfo("Asia/Shanghai")).date()))
     lines.extend(["", *diagnostics(data)])
     return "\n".join(lines), PARTIAL if degraded else 0
 
@@ -95,9 +117,10 @@ def render_hotspots(data: dict) -> tuple[str, int]:
     lines = ["# 热点板块观察", "", f"来源：{cell(data.get('provider_used') or data.get('provider'))}。",
              f"使用缓存：{bool(data.get('cache_used'))}；过期：{bool(data.get('stale'))}；"
              f"缓存时间：{cell(data.get('cached_at'))}；备用来源：{bool(data.get('fallback_used'))}。",
-             "", "| 板块/主题 | 涨跌幅（%） | 事件摘要 |", "| --- | --- | --- |"]
+             "", "板块涨幅仅是行情线索，未取得事件材料时不能解释为新闻驱动。",
+             "", "| 板块/主题 | 涨跌幅（%） |", "| --- | --- |"]
     for row in rows:
-        fields = (row.get("topic") or row.get("name"), row.get("change_pct"), row.get("event_summary"))
+        fields = (row.get("topic") or row.get("name"), row.get("change_pct"))
         lines.append("| " + " | ".join(cell(v) for v in fields) + " |")
     if not rows:
         lines.append("\n未取得热点数据，不能解读为市场没有热点。")
@@ -138,8 +161,12 @@ def run_service(task: str) -> tuple[str, int]:
         strategy = os.getenv("ACTIONS_SCREENING_STRATEGY") or "balanced_alpha"
         if strategy not in STRATEGIES:
             raise ValueError("Unsupported screening strategy")
-        data = service.screen(strategy=strategy, market="cn", max_results=bounded_int("ACTIONS_MAX_RESULTS", 3, 1, 10))
-        return render_screening(data)
+        requested = bounded_int("ACTIONS_MAX_RESULTS", 10, 1, 10)
+        os.environ.setdefault("LLM_TIMEOUT_SEC", "240")
+        os.environ.setdefault("LLM_MAX_TOKENS", "6144")
+        data = service.screen(strategy=strategy, market="cn", max_results=requested, research_limit=12)
+        attach_technical_plans(data)
+        return render_screening(data, requested=requested)
     if task == "backtest":
         from src.services.backtest_service import BacktestService
 
@@ -188,7 +215,7 @@ def orchestrate() -> int:
     stocks = stock_override()
     notify, force = flag("ACTIONS_NOTIFY", True), flag("ACTIONS_FORCE_RUN")
     timeout = bounded_int("ACTIONS_TASK_TIMEOUT_SECONDS", 900, 60, 1800)
-    bounded_int("ACTIONS_MAX_RESULTS", 3, 1, 10)
+    bounded_int("ACTIONS_MAX_RESULTS", 10, 1, 10)
     if (os.getenv("ACTIONS_SCREENING_STRATEGY") or "balanced_alpha") not in STRATEGIES:
         raise ValueError("Unsupported screening strategy")
     if mode == "strategy":
@@ -200,6 +227,7 @@ def orchestrate() -> int:
     if mode == "full" and flag("ACTIONS_DAILY_EXTRAS", True):
         tasks.extend(["hotspots", "screening"])
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    started_at = datetime.now(ZoneInfo("Asia/Shanghai"))
     results, supplements = [], []
     for task in tasks:
         env = os.environ.copy()
@@ -225,7 +253,9 @@ def orchestrate() -> int:
             supplements.append(report_path.read_text(encoding="utf-8"))
         elif task not in {"full", "stocks-only", "market-only", "strategy", "data-check"}:
             supplements.append(f"# {task}\n\n{status}，退出码 {code}；未产生可用报告，请检查 Actions 日志。")
-    summary = "# Actions 运行概览\n\n" + "\n".join(f"- {r['task']}：{r['status']}（{r['exit_code']}）" for r in results)
+    summary = "# 选股与热点补充报告\n\n" + "\n".join(f"- {r['task']}：{r['status']}（{r['exit_code']}）" for r in results)
+    summary += f"\n\n分析开始：{started_at.isoformat()}（北京时间）；触发方式：{cell(os.getenv('GITHUB_EVENT_NAME', '本地/手动'))}。"
+    summary += "\n\n定时计划：工作日18:00北京时间。GitHub Actions可能延迟触发，计划时间不等于邮件到达时间；分析开始前还包含排队和安装依赖。"
     summary += "\n\n数据与模型可能降级；完成仅表示入口执行完成，详情以报告、日志为准。"
     content = summary + "\n\n---\n\n" + "\n\n---\n\n".join(supplements)
     content += "\n\n生成时间：" + datetime.now(ZoneInfo("Asia/Shanghai")).isoformat() + "\n"
