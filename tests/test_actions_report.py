@@ -341,3 +341,121 @@ def test_backtest_service_reuses_summary_api(monkeypatch):
 
 def test_actual_subprocess_exit_code_is_preserved():
     assert batch.run_command([sys.executable, "-c", "raise SystemExit(7)"], 5, batch.os.environ.copy()) == 7
+
+
+def screening_mail_data():
+    today = str(batch.datetime.now(batch.ZoneInfo("Asia/Shanghai")).date())
+    return {"ranking_mode": "llm", "llm_market_view": "普涨但银行偏弱", "llm_portfolio_risk": "金融集中",
+            "candidates": [{"code": str(600001 + i), "name": f"测试股{i}", "reason": "低估值待确认",
+                            "llm_thesis": "估值与量能均衡",
+                            "risk_summary": "信用风险", "score": 75,
+                            "why_selected": [{"source": "llm", "quality": "inferred", "text": "估值与量能均衡"},
+                                             {"source": "screening", "text": "internal factor labels"}],
+                            "technical_plan": {"status": "条件式技术测算", "source": "test", "as_of": today,
+                                               "entry": 10, "target": 13, "take_profit": 12, "stop_loss": 9,
+                                               "ma5": 10, "ma20": 10, "support20": 9,
+                                               "resistance20": 11, "atr20": 1},
+                            "dsa_context": {"quote": {"price": 10, "change_pct": 0, "volume_ratio": 1.2,
+                                                       "source": "test", "is_stale": True}},
+                            "dsa_news": [{"title": f"测试股{i}：季报发布", "published_date": today,
+                                          "url": f"https://example.com/{i}", "snippet": "网页登录噪声"}]}
+                           for i in range(10)]}
+
+
+def test_compact_screening_preserves_all_stocks_prices_and_uncertainty():
+    data = screening_mail_data()
+    compact, code = batch.render_screening(data, requested=10, compact=True)
+    detailed, detailed_code = batch.render_screening(data, requested=10)
+    assert code == detailed_code == 0
+    assert compact.count("## ") == 10
+    assert compact.count("参考入场 10.00｜目标 13.00｜止盈 12.00｜止损 9.00") == 10
+    quotes = [line for line in compact.splitlines() if line.startswith("- 行情：")]
+    assert len(quotes) == 10 and all("行情时间未核验" in line and "行情已过期" in line for line in quotes)
+    assert "普涨但银行偏弱" in compact and "金融集中" in compact
+    assert compact.count("- 理由：估值与量能均衡") == 10 and "低估值待确认" not in compact
+    assert "inferred" not in compact and "internal factor labels" not in compact
+    assert "网页登录噪声" not in compact and "网页登录噪声" in detailed
+    assert compact.count("价格口径") == 1 and len(compact) < len(detailed) / 2
+    for i in range(10):
+        assert f"测试股{i}（{600001 + i}）" in compact
+        assert f"https://example.com/{i}" in compact
+
+
+def test_compact_news_filters_quote_pages_mismatches_dates_and_unsafe_urls():
+    from datetime import timedelta
+    data = screening_mail_data()
+    stock = data["candidates"][0]
+    today = batch.datetime.now(batch.ZoneInfo("Asia/Shanghai")).date()
+    stock["dsa_news"] = [
+        {"title": "测试股0:10.00 0.00% 行情", "url": "https://q.stock.sohu.com/cn/600001", "published_date": str(today)},
+        {"title": "其他公司减持", "url": "https://example.com/unrelated", "published_date": str(today)},
+        {"title": "测试股0旧资料", "url": "https://example.com/old", "published_date": str(today - timedelta(days=8))},
+        {"title": "测试股0未核验", "url": "https://example.com/undated"},
+        {"title": "测试股0未来资料", "url": "https://example.com/future", "published_date": str(today + timedelta(days=1))},
+        {"title": "测试股0危险链接", "url": "javascript:alert(1)", "published_date": str(today)},
+        *[{"title": f"测试股0公告{n}", "url": f"https://example.com/notice{n}", "published_date": str(today)} for n in range(3)],
+    ]
+    content, _ = batch.render_screening(data, compact=True)
+    assert "notice0" in content and "notice1" in content and "notice2" not in content
+    for forbidden in ("sohu", "unrelated", "/old", "undated", "future", "javascript:"):
+        assert forbidden not in content
+    stock["dsa_news"] = stock["dsa_news"][:6]
+    content, _ = batch.render_screening(data, compact=True)
+    assert "暂无近7日匹配本股的有效新闻链接" in content
+
+
+@pytest.mark.parametrize("failure", ["shortfall", "price", "model", "source", "enrichment"])
+def test_compact_and_detailed_reports_share_partial_status(failure):
+    data = screening_mail_data()
+    if failure == "shortfall":
+        data["candidates"].pop()
+    elif failure == "price":
+        data["candidates"][0]["technical_plan"] = {"status": "无法测算", "reason": "日线过期"}
+    elif failure == "model":
+        data["llm_failure_reason"] = "timeout"
+    elif failure == "source":
+        data["source_errors"] = ["source failed"]
+    else:
+        data["dsa_enrichment"] = {"warnings": ["news missing"]}
+    compact, code = batch.render_screening(data, requested=10, compact=True)
+    assert code == batch.render_screening(data, requested=10)[1] == batch.PARTIAL
+    assert "部分结果" in compact
+    if failure == "price":
+        assert "无法测算（日线过期）" in compact
+    if failure == "shortfall":
+        assert "候选 9 只 / 请求 10 只" in compact
+
+
+def test_notification_uses_compact_content_while_artifacts_retain_details(monkeypatch):
+    monkeypatch.setenv("ACTIONS_MODE", "screening")
+    monkeypatch.setenv("ACTIONS_NOTIFY", "true")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    sent = []
+    class Notifier:
+        def is_available(self):
+            return True
+        def send(self, text):
+            sent.append(text)
+            return True
+    monkeypatch.setitem(sys.modules, "src.notification", SimpleNamespace(NotificationService=Notifier))
+    def run(*args):
+        data = screening_mail_data()
+        Path("reports/actions_screening.md").write_text(batch.render_screening(data, requested=10)[0])
+        Path("reports/actions_screening_email.md").write_text(batch.render_screening(data, requested=10, compact=True)[0])
+        return 0
+    monkeypatch.setattr(batch, "run_command", run)
+    assert batch.orchestrate() == 0
+    assert sent == [Path("reports/actions_email.md").read_text()]
+    assert "网页登录噪声" not in sent[0] and "网页登录噪声" in Path("reports/actions_summary.md").read_text()
+    assert "/example/repo/actions/runs/123" in sent[0]
+
+
+def test_failed_rerun_cannot_send_leftover_compact_report(monkeypatch):
+    monkeypatch.setenv("ACTIONS_MODE", "screening")
+    Path("reports").mkdir()
+    Path("reports/actions_screening_email.md").write_text("过期的成功报告")
+    monkeypatch.setattr(batch, "run_command", lambda *args: 124)
+    assert batch.orchestrate() == 1
+    assert "过期的成功报告" not in Path("reports/actions_email.md").read_text()
+    assert "失败" in Path("reports/actions_email.md").read_text()

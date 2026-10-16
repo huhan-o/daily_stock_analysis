@@ -33,6 +33,8 @@ A failed task does not prevent remaining extras from being attempted. New empty/
 
 `reports/actions_summary.md` and `actions_status.json` record results; per-mode Markdown files preserve supplemental reports. The Actions Summary also displays the digest. Existing report/log artifacts retain their 30-day policy. Supplemental notification failure fails the job without discarding reports. SMTP acceptance is not proof of inbox delivery.
 
+Screening emails use a concise view: market assessment, portfolio risk, every selected stock, one core selection reason, quote/change/volume ratio, reference entry/target/take-profit/stop-loss with daily-bar date/source, and main risk. Up to two dated links from the last seven days must mention the stock name or code; common quote pages and raw snippets are omitted. Matching is only a search lead, not verification of relevance or accuracy. Missing timestamps, stale quotes, unavailable price plans and partial status remain visible. Shared methodology appears once. `actions_screening_email.md` holds the concise screening view and `actions_email.md` the sent supplement; detailed evidence stays in `actions_summary.md` and Actions Summary. Both views reuse the same analysis without extra model calls. The email links to the current run, whose `analysis-reports-*` artifact contains all reports.
+
 ## Optional history and privacy
 
 The job uses Asia/Shanghai. The weekday 18:00 schedule is a planned start, not a delivery guarantee: GitHub can delay scheduled runs. Reports distinguish analysis start, generation, quote timestamps and retrieval times. Supplemental emails have a distinct subject and a timezone-aware Date header.
