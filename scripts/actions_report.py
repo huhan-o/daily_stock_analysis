@@ -16,7 +16,7 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from scripts.actions_screening_report import attach_technical_plans, candidate_details
+from scripts.actions_screening_report import attach_technical_plans, candidate_details, candidate_summary
 
 MODES = (
     "full", "stocks-only", "market-only", "screening", "hotspots",
@@ -70,7 +70,7 @@ def diagnostics(data: dict) -> list[str]:
     return lines
 
 
-def render_screening(data: dict, requested: int | None = None) -> tuple[str, int]:
+def render_screening(data: dict, requested: int | None = None, *, compact: bool = False) -> tuple[str, int]:
     candidates = data.get("candidates") or []
     def actionable(value):
         match = re.fullmatch(r"DSA provider context applied (\d+) of (\d+) candidates", str(value))
@@ -84,6 +84,23 @@ def render_screening(data: dict, requested: int | None = None) -> tuple[str, int
                      for item in candidates) if requested is not None else False
     incomplete = incomplete or bool((data.get("dsa_enrichment") or {}).get("warnings"))
     degraded = degraded or shortfall or incomplete
+    if compact:
+        lines = ["# 全市场候选股", "", f"候选 {len(candidates)} 只"
+                 + (f" / 请求 {requested} 只" if shortfall else "")
+                 + f"；{'部分结果，数据或模型有缺口，详见完整报告' if degraded else '分析完成'}。"]
+        for key, label in (("llm_market_view", "市场判断（模型）"), ("llm_portfolio_risk", "组合风险")):
+            if data.get(key):
+                lines.extend(["", f"{label}：{cell(data[key])}"])
+        if not candidates:
+            lines.extend(["", "暂无可用候选。"])
+        today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        for index, item in enumerate(candidates, 1):
+            lines.extend(candidate_summary(item, index, cell, today))
+        lines.extend(["", "价格口径：以所列完整日线收盘价作入场假设，止损取20日低点与入场−2×ATR20中的较高值；"
+                      "R=入场−止损，止盈=入场+2R，目标=入场+3R，观察5–20个交易日。实际入场或重大消息变化须重算，跳空止损不保证成交。",
+                      "", "仅供研究。理由为模型判断；消息链接仅是检索线索，需核验原文，不能证明涨跌因果；"
+                      "行情时间未核验的报价不视为实时价。详细证据与诊断见完整报告。"])
+        return "\n".join(lines), PARTIAL if degraded else 0
     lines = [
         "# 全市场候选股", "", "仅供研究，不会下单，也不会自动替换自选股。",
         f"策略：{cell(data.get('strategy'))}；排序：{cell(data.get('ranking_mode'))}；"
@@ -167,6 +184,9 @@ def run_service(task: str) -> tuple[str, int]:
         os.environ.setdefault("LLM_RANKING_PROMPT_MAX_CHARS", "64000")
         data = service.screen(strategy=strategy, market="cn", max_results=requested, research_limit=12)
         attach_technical_plans(data)
+        REPORT_DIR.mkdir(parents=True, exist_ok=True)
+        compact, _ = render_screening(data, requested=requested, compact=True)
+        (REPORT_DIR / "actions_screening_email.md").write_text(compact, encoding="utf-8")
         return render_screening(data, requested=requested)
     if task == "backtest":
         from src.services.backtest_service import BacktestService
@@ -229,7 +249,7 @@ def orchestrate() -> int:
         tasks.extend(["hotspots", "screening"])
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     started_at = datetime.now(ZoneInfo("Asia/Shanghai"))
-    results, supplements = [], []
+    results, supplements, email_supplements = [], [], []
     for task in tasks:
         env = os.environ.copy()
         env["AGENT_MODE"] = "true" if task == "strategy" else "false"
@@ -238,7 +258,9 @@ def orchestrate() -> int:
             if not env.get(key):
                 env.pop(key, None)
         report_path = REPORT_DIR / f"actions_{task}.md"
+        email_path = REPORT_DIR / f"actions_{task}_email.md"
         report_path.unlink(missing_ok=True)
+        email_path.unlink(missing_ok=True)
         if task in {"full", "stocks-only", "market-only", "strategy", "data-check"}:
             command = main_command(task, stocks, notify, force)
         else:
@@ -252,15 +274,27 @@ def orchestrate() -> int:
         results.append({"task": task, "status": status, "exit_code": code})
         if report_path.exists():
             supplements.append(report_path.read_text(encoding="utf-8"))
+            email_supplements.append(email_path.read_text(encoding="utf-8") if email_path.exists() else supplements[-1])
         elif task not in {"full", "stocks-only", "market-only", "strategy", "data-check"}:
             supplements.append(f"# {task}\n\n{status}，退出码 {code}；未产生可用报告，请检查 Actions 日志。")
+            email_supplements.append(supplements[-1])
     summary = "# 选股与热点补充报告\n\n" + "\n".join(f"- {r['task']}：{r['status']}（{r['exit_code']}）" for r in results)
     summary += f"\n\n分析开始：{started_at.isoformat()}（北京时间）；触发方式：{cell(os.getenv('GITHUB_EVENT_NAME', '本地/手动'))}。"
     summary += "\n\n定时计划：工作日18:00北京时间。GitHub Actions可能延迟触发，计划时间不等于邮件到达时间；分析开始前还包含排队和安装依赖。"
     summary += "\n\n数据与模型可能降级；完成仅表示入口执行完成，详情以报告、日志为准。"
     content = summary + "\n\n---\n\n" + "\n\n---\n\n".join(supplements)
     content += "\n\n生成时间：" + datetime.now(ZoneInfo("Asia/Shanghai")).isoformat() + "\n"
+    email_content = "# 选股与热点补充报告\n\n"
+    email_content += f"分析开始：{started_at:%Y-%m-%d %H:%M}（北京时间）\n\n"
+    email_content += "；".join(f"{r['task']}：{r['status']}" for r in results) + "\n\n"
+    email_content += "\n\n---\n\n".join(email_supplements)
+    if repository := os.getenv("GITHUB_REPOSITORY"):
+        if run_id := os.getenv("GITHUB_RUN_ID"):
+            url = f"{os.getenv('GITHUB_SERVER_URL', 'https://github.com')}/{repository}/actions/runs/{run_id}"
+            email_content += f"\n\n[完整报告与运行状态](<{url}>)（页面底部 Artifacts → analysis-reports-*，含逐股证据与诊断）。"
+    email_content += f"\n\n生成：{datetime.now(ZoneInfo('Asia/Shanghai')):%Y-%m-%d %H:%M}（北京时间）\n"
     (REPORT_DIR / "actions_summary.md").write_text(content, encoding="utf-8")
+    (REPORT_DIR / "actions_email.md").write_text(email_content, encoding="utf-8")
     (REPORT_DIR / "actions_status.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     if path := os.getenv("GITHUB_STEP_SUMMARY"):
         with open(path, "a", encoding="utf-8") as output:
@@ -270,7 +304,7 @@ def orchestrate() -> int:
         from src.notification import NotificationService
 
         notifier = NotificationService()
-        notification_failed = not notifier.is_available() or not notifier.send(content)
+        notification_failed = not notifier.is_available() or not notifier.send(email_content)
         if notification_failed:
             print("::error::Supplement notification failed; reports remain available as artifacts")
     return 1 if notification_failed or any(r["exit_code"] not in (0, SKIPPED) for r in results) else 0
