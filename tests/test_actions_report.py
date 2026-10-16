@@ -459,3 +459,16 @@ def test_failed_rerun_cannot_send_leftover_compact_report(monkeypatch):
     assert batch.orchestrate() == 1
     assert "过期的成功报告" not in Path("reports/actions_email.md").read_text()
     assert "失败" in Path("reports/actions_email.md").read_text()
+
+
+def test_compact_factor_fallback_does_not_expose_analyzer_labels():
+    data = screening_mail_data()
+    data.update(ranking_mode="factor", llm_failure_reason="timeout")
+    for stock in data["candidates"]:
+        stock.pop("llm_thesis")
+        stock["reason"] = "本地后置评分: value_quality、controlled_reversal"
+    content, code = batch.render_screening(data, requested=10, compact=True)
+    assert code == batch.PARTIAL and "部分结果" in content
+    assert content.count("因子筛选入围，模型未提供入选理由，需复核") == 10
+    assert "value_quality" not in content and "controlled_reversal" not in content
+    assert content.count("参考入场 ") == 10
