@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] Actions 选股默认请求10只并扩大新闻研究覆盖，展示逐股行情时间、来源、新闻证据与条件式技术价格计划；模型等待放宽至240秒，保留真实降级状态，区分计划启动与实际生成时间及附加邮件主题。
 - [新功能] GitHub Actions 增加全市场选股、热点、Agent 策略、历史回测、ETF 轮动和无模型数据检查入口，支持本次股票覆盖、推送开关及有界定时附加报告；降级结果显式标识，历史 SQLite 快照默认关闭并提示公开仓库风险。
 
 - [文档] 三语 README 分别使用 Modelflare 简体中文、英文及繁体中文赞助横幅，保持现有版式与链接。

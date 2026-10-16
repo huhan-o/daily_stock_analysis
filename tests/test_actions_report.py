@@ -173,17 +173,19 @@ def test_service_uses_existing_screening_contract(monkeypatch):
         sys.modules, "src.storage", SimpleNamespace(DatabaseManager=SimpleNamespace(get_instance=lambda: "db"))
     )
     monkeypatch.setitem(sys.modules, "src.services.screening_service", SimpleNamespace(ScreeningService=Service))
+    monkeypatch.setattr(batch, "attach_technical_plans", lambda data: data['candidates'][0].update(
+        technical_plan={"status": "无法测算", "reason": "test data unavailable"}))
     monkeypatch.setitem(
         sys.modules, "src.core.trading_calendar", SimpleNamespace(get_open_markets_today=lambda: {"cn"})
     )
-    assert batch.run_service("screening")[1] == 0
-    assert calls[0] == {"strategy": "balanced_alpha", "market": "cn", "max_results": 3}
+    assert batch.run_service("screening")[1] == batch.PARTIAL
+    assert calls[0] == {"strategy": "balanced_alpha", "market": "cn", "max_results": 10, "research_limit": 12}
     assert batch.run_service("hotspots")[1] == 0
     assert calls[1] == {"top": 12, "refresh": True, "include_details": False}
     monkeypatch.setitem(sys.modules, "src.core.trading_calendar", SimpleNamespace(get_open_markets_today=lambda: set()))
     assert batch.run_service("screening")[1] == batch.SKIPPED
     monkeypatch.setenv("ACTIONS_FORCE_RUN", "true")
-    assert batch.run_service("screening")[1] == 0
+    assert batch.run_service("screening")[1] == batch.PARTIAL
 
 
 @pytest.mark.parametrize("notify_success", [True, False])

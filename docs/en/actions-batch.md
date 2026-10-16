@@ -6,7 +6,7 @@ The existing daily workflow retains its weekday 10:00 UTC schedule and original 
 | --- | --- |
 | `full` | Original stock + market report, then hotspots + one market-wide screening run by default |
 | `stocks-only`, `market-only` | Original entry points |
-| `screening` | A-share candidates using one of ten existing strategies; three candidates by default |
+| `screening` | A-share candidates using one of ten existing strategies; ten candidates by default |
 | `hotspots` | Refresh sector/theme observations, preserving stale/cache/source diagnostics |
 | `strategy` | Existing Agent skills on watchlist or one-run stock overrides |
 | `backtest` | Evaluate historical reports and render actual sample/accuracy statistics |
@@ -19,7 +19,8 @@ Scheduled full reports add hotspots and balanced screening, not every Agent skil
 
 Repository variables:
 
-- `ACTIONS_DAILY_EXTRAS=true`, `ACTIONS_SCREENING_STRATEGY=balanced_alpha`, `ACTIONS_MAX_RESULTS=3`: scheduled extras, strategy and candidate count.
+- `ACTIONS_DAILY_EXTRAS=true`, `ACTIONS_SCREENING_STRATEGY=balanced_alpha`, `ACTIONS_MAX_RESULTS=10`: scheduled extras, strategy and candidate count. Shortfalls are reported without padding or duplicate stocks.
+- `LLM_TIMEOUT_SEC=240`, `LLM_MAX_TOKENS=6144`: Actions screening request timeout and output budget. Timed-out paid calls are not automatically retried; factor fallback remains explicit.
 - `ACTIONS_TASK_TIMEOUT_SECONDS=900` (60–1800): per-task budget; hotspots are capped at 180 seconds. `ANALYSIS_TIMEOUT_MINUTES` defaults to 60 for the entire job, including setup; existing overrides still apply.
 - `AGENT_SKILLS=bull_trend,shrink_pullback`, `AGENT_MAX_STEPS=6`, `AGENT_ARCH=single`: manual Agent defaults. Step limits are not token/cost guarantees. Advanced multi mode needs separate compatibility/cost checks.
 - `BACKTEST_ENABLED=true`, `BACKTEST_EVAL_WINDOW_DAYS=10`, `BACKTEST_MIN_AGE_DAYS=14`, and existing `ETF_ROTATION_*` variables reuse the application's configuration.
@@ -30,6 +31,12 @@ A failed task does not prevent remaining extras from being attempted. New empty/
 `reports/actions_summary.md` and `actions_status.json` record results; per-mode Markdown files preserve supplemental reports. The Actions Summary also displays the digest. Existing report/log artifacts retain their 30-day policy. Supplemental notification failure fails the job without discarding reports. SMTP acceptance is not proof of inbox delivery.
 
 ## Optional history and privacy
+
+The job uses Asia/Shanghai. The weekday 18:00 schedule is a planned start, not a delivery guarantee: GitHub can delay scheduled runs. Reports distinguish analysis start, generation, quote timestamps and retrieval times. Supplemental emails have a distinct subject and a timezone-aware Date header.
+
+News/events cover up to 12 candidates before model ranking and all selected candidates afterwards, retaining the API's default research limit for other callers. Per-stock details expose selection provenance, quotes/changes/turnover, daily averages/support/resistance, dated news and original links, inferred catalysts/risks/invalidation conditions. Items older than seven days or with unknown publication dates are labelled accordingly. Correlation between news and price movement is not presented as proven causation.
+
+Price levels are conditional technical scenarios over 5–20 trading sessions, not valuation forecasts: require at least 21 valid completed OHLC bars ending on the expected completed session. Assume entry at the last close; stop=max(20-session low, entry−2×ATR20), R=entry−stop, take-profit=entry+2R, target=entry+3R. Missing/stale/invalid bars or invalid risk intervals suppress levels and mark partial output. Entry changes, corporate actions or major news require recalculation. Complete research coverage counts alone are informational; actual data/model failures still mark degradation. Hotspot tables display obtained sector returns without an empty event column.
 
 Treat public-repository Actions logs, artifacts and caches as publicly readable. Do not add account information, holdings or credentials to them. History persistence is opt-in because the database can contain analysis context.
 

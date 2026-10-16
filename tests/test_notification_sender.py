@@ -13,7 +13,7 @@ import os
 import sys
 import unittest
 from email.header import decode_header, make_header
-from email.utils import parseaddr
+from email.utils import parseaddr, parsedate_to_datetime
 from types import SimpleNamespace
 from unittest import mock
 from typing import Optional
@@ -1065,6 +1065,14 @@ class TestEmailSender(unittest.TestCase):
         payloads = msg.get_payload()
         self.assertNotIn("[dsa-market-region]", payloads[0].get_payload(decode=True).decode("utf-8"))
         self.assertNotIn("[dsa-market-region]", payloads[1].get_payload(decode=True).decode("utf-8"))
+
+    @mock.patch("smtplib.SMTP_SSL")
+    def test_supplement_subject_and_date_are_unambiguous(self, mock_smtp_ssl):
+        sender = EmailSender(_config(email_sender="a@qq.com", email_password="p", email_receivers=["b@qq.com"]))
+        self.assertTrue(sender.send_to_email('# 选股与热点补充报告\n\nBody'))
+        msg = mock_smtp_ssl.return_value.send_message.call_args[0][0]
+        self.assertIn('选股与热点补充报告', str(make_header(decode_header(str(msg['Subject'])))))
+        self.assertIsNotNone(parsedate_to_datetime(msg['Date']).tzinfo)
 
     @mock.patch("smtplib.SMTP_SSL")
     def test_send_image_email_encodes_non_ascii_sender_name(self, mock_smtp_ssl):
