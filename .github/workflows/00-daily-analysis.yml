@@ -135,6 +135,8 @@ jobs:
           ACTIONS_MAX_RESULTS: ${{ github.event.inputs.max_results || vars.ACTIONS_MAX_RESULTS || '10' }}
           LLM_TIMEOUT_SEC: ${{ vars.LLM_TIMEOUT_SEC || '240' }}
           LLM_MAX_TOKENS: ${{ vars.LLM_MAX_TOKENS || '6144' }}
+          LLM_RANKING_PROMPT_MAX_CHARS: ${{ vars.LLM_RANKING_PROMPT_MAX_CHARS || '64000' }}
+          SNAPSHOT_SOURCE_PRIORITY: ${{ vars.SNAPSHOT_SOURCE_PRIORITY || (secrets.TUSHARE_TOKEN && 'tushare,em_datacenter,sina,efinance,akshare_em') || 'em_datacenter,sina,efinance,akshare_em' }}
           ACTIONS_TASK_TIMEOUT_SECONDS: ${{ vars.ACTIONS_TASK_TIMEOUT_SECONDS || '900' }}
           DATABASE_PATH: ./data/stock_analysis.db
           AGENT_MODE: 'false'

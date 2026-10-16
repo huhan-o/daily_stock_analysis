@@ -1,8 +1,9 @@
 """Evidence and conditional technical levels for Actions screening reports."""
 
-from datetime import date
+from datetime import date, datetime
 import math
 from urllib.parse import quote, urlsplit
+from zoneinfo import ZoneInfo
 
 
 def number(value):
@@ -15,13 +16,16 @@ def number(value):
         return None
 
 
-def technical_plan(rows: list[dict], source: str, expected_date: date) -> dict:
+def technical_plan(rows: list[dict], source: str, expected_date: date,
+                   *, incomplete_date: date | None = None) -> dict:
     """Use completed daily bars only; never fill missing OHLC or stale dates."""
     missing = {"status": "无法测算", "reason": "日线不足21条，或日期/OHLC无效"}
     bars = []
     try:
         for row in rows:
             day = date.fromisoformat(str(row["date"])[:10])
+            if day == incomplete_date and day > expected_date:
+                continue
             values = [number(row.get(key)) for key in ("high", "low", "close")]
             if any(value is None or value <= 0 for value in values):
                 return missing
@@ -63,11 +67,14 @@ def attach_technical_plans(data: dict) -> None:
     from src.services.screening_service import get_dsa_daily_history
 
     expected = get_effective_trading_date("cn")
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
     for candidate in data.get("candidates") or []:
         try:
             frame, source = get_dsa_daily_history(candidate["code"], lookback_days=90)
             rows = frame.to_dict("records") if frame is not None else []
-            candidate["technical_plan"] = technical_plan(rows, source, expected)
+            candidate["technical_plan"] = technical_plan(
+                rows, source, expected, incomplete_date=today if expected < today else None,
+            )
         except Exception as exc:
             candidate["technical_plan"] = {"status": "无法测算", "reason": f"日线读取失败：{type(exc).__name__}"}
 
@@ -119,7 +126,7 @@ def candidate_details(candidate: dict, index: int, cell, today: date) -> list[st
         lines.extend([
             f"- 日线依据：{cell(plan['source'])}，截至{cell(plan['as_of'])}；MA5 / MA20：{plan['ma5']} / {plan['ma20']}元；20日支撑 / 压力：{plan['support20']} / {plan['resistance20']}元；ATR20：{plan['atr20']}元。",
             f"- 参考入场价：{plan['entry']:.2f}元；目标价：{plan['target']:.2f}元；止盈价：{plan['take_profit']:.2f}元；止损价：{plan['stop_loss']:.2f}元。",
-            "- 价格依据：以最新完整日线收盘价为入场假设；止损取20日最低价与入场价减2×ATR20中的较高值；风险R=入场价−止损价；止盈=入场价+2R，技术目标=入场价+3R。观察期5–20个交易日，属于条件式技术测算。实际成交价变化、除权或突发新闻后须重新计算；跳空时止损价不保证成交。",
+            "- 价格依据：盘中剔除当天未收盘日线，以最新完整日线收盘价为入场假设；止损取20日最低价与入场价减2×ATR20中的较高值；风险R=入场价−止损价；止盈=入场价+2R，技术目标=入场价+3R。观察期5–20个交易日，属于条件式技术测算。实际成交价变化、除权或突发新闻后须重新计算；跳空时止损价不保证成交。",
         ])
     else:
         lines.append(f"- 目标价 / 止盈价 / 止损价：无法测算。原因：{cell(plan.get('reason'))}。")
