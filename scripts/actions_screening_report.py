@@ -2,6 +2,7 @@
 
 from datetime import date, datetime
 import math
+import re
 from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
 
@@ -79,14 +80,16 @@ def attach_technical_plans(data: dict) -> None:
             candidate["technical_plan"] = {"status": "无法测算", "reason": f"日线读取失败：{type(exc).__name__}"}
 
 
-def evidence_lines(candidate: dict, cell, today: date) -> list[str]:
+def evidence_lines(candidate: dict, cell, today: date, *, compact: bool = False) -> list[str]:
     lines, seen = [], set()
     context = candidate.get("dsa_context") or {}
-    for key, label in (("dsa_news", "新闻"), ("dsa_events", "公告/事件")):
+    sources = (("dsa_news", "新闻"), ("dsa_events", "公告/事件"))
+    for key, label in reversed(sources) if compact else sources:
         context_key = "news" if key == "dsa_news" else "events"
         items = candidate.get(key) or (context.get(context_key) or {}).get("results") or []
-        for item in items[:3]:
-            title, url = item.get("title") or item.get("snippet"), str(item.get("url") or "")
+        for item in items if compact else items[:3]:
+            title = item.get("title") or (None if compact else item.get("snippet"))
+            url = str(item.get("url") or "")
             if not title or (title, url) in seen:
                 continue
             seen.add((title, url))
@@ -96,12 +99,62 @@ def evidence_lines(candidate: dict, cell, today: date) -> list[str]:
                 freshness = "近7日" if 0 <= age <= 7 else "背景资料，非近期催化"
             except ValueError:
                 freshness = "发布时间未核验，不能视为近期催化"
-            parsed = urlsplit(url)
+            try:
+                parsed = urlsplit(url)
+            except ValueError:
+                parsed = urlsplit("")
+            if compact:
+                identity = [str(candidate.get(field) or "") for field in ("name", "code")]
+                text = f"{title} {item.get('snippet') or ''}"
+                matched = any(value and value in text for value in identity)
+                quote_page = parsed.netloc in {"q.stock.sohu.com", "quote.eastmoney.com"}
+                quote_page = quote_page or bool(re.search(r"最新价格|行情_走势图|\d[\d.]*\s*[+-]?\d[\d.]*%", str(title)))
+                if not matched or quote_page or freshness != "近7日" or parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                    continue
             link = f"[原文](<{quote(url, safe=':/?=&%#@+~.-_')}>)" if parsed.scheme in {"http", "https"} and parsed.netloc else "无有效原文链接"
+            if compact:
+                lines.append(f"- 消息线索：{cell(str(published)[:10])} {cell(title)} {link}")
+                if len(lines) == 2:
+                    return lines
+                continue
             lines.append(f"- {label}：{cell(title)}；{cell(published)}；{freshness}；{cell(item.get('source'))}；{link}")
             if item.get("snippet"):
                 lines.append(f"  摘要：{cell(str(item['snippet'])[:400])}")
+    if compact:
+        return lines or ["- 消息线索：暂无近7日匹配本股的有效新闻链接。"]
     return lines or ["- 新闻/事件：未取得可核验材料，不能判断消息利好或利空。"]
+
+
+def candidate_summary(candidate: dict, index: int, cell, today: date) -> list[str]:
+    context = candidate.get("dsa_context") or {}
+    quote_data = context.get("quote") or candidate
+    plan = candidate.get("technical_plan") or {}
+    lines = ["", f"## {index}. {cell(candidate.get('name'))}（{cell(candidate.get('code'))}）", ""]
+    reason = candidate.get("llm_thesis") or candidate.get("reason") or "入选理由缺失"
+    lines.append(f"- 理由：{cell(reason)}")
+    price = number(quote_data.get("price"))
+    change = number(quote_data.get("change_pct"))
+    market = f"{price:.2f}元" if price is not None else "报价缺失"
+    if change is not None:
+        market += f"（{change:+.2f}%）"
+    if quote_data.get("volume_ratio") is not None:
+        market += f"；量比{cell(quote_data['volume_ratio'])}"
+    market += f"；{cell(quote_data.get('source') or '筛选快照')}"
+    market += f"，{cell(quote_data['provider_timestamp'])}" if quote_data.get("provider_timestamp") else "，行情时间未核验"
+    if quote_data.get("is_stale"):
+        market += "；行情已过期"
+    lines.append(f"- 行情：{market}")
+    if plan.get("status") == "条件式技术测算":
+        lines.append(f"- 参考入场 {plan['entry']:.2f}｜目标 {plan['target']:.2f}｜止盈 {plan['take_profit']:.2f}｜止损 {plan['stop_loss']:.2f} 元")
+        lines.append(f"- 价格依据：{cell(plan['as_of'])}完整日线，{cell(plan['source'])}。")
+    else:
+        lines.append(f"- 目标 / 止盈 / 止损：无法测算（{cell(plan.get('reason') or '日线缺失')}）。")
+    risk = candidate.get("risk_summary") or candidate.get("llm_risks") or candidate.get("risk_flags") or "风险资料不足"
+    lines.append(f"- 风险：{cell('；'.join(map(str, risk)) if isinstance(risk, list) else risk)}")
+    lines.extend(evidence_lines(candidate, cell, today, compact=True))
+    if context.get("warnings"):
+        lines.append("- 数据提醒：本股数据存在缺口，详见完整报告。")
+    return lines
 
 
 def candidate_details(candidate: dict, index: int, cell, today: date) -> list[str]:
