@@ -12,7 +12,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
 from email.header import Header
-from email.utils import formataddr
+from email.utils import formataddr, format_datetime
 import smtplib
 
 from data_provider.base import normalize_stock_code
@@ -163,7 +163,10 @@ class EmailSender:
             # 生成主题
             if subject is None:
                 date_str = datetime.now().strftime('%Y-%m-%d')
-                subject = f"📈 股票智能分析报告 - {date_str}"
+                if content.startswith('# 选股与热点补充报告'):
+                    subject = f"📋 选股与热点补充报告 - {date_str}"
+                else:
+                    subject = f"📈 股票智能分析报告 - {date_str}"
 
             sanitized_content = strip_hidden_markdown_metadata(content).strip()
             
@@ -172,6 +175,7 @@ class EmailSender:
             
             # 构建邮件
             msg = MIMEMultipart('alternative')
+            msg['Date'] = format_datetime(datetime.now().astimezone())
             msg['Subject'] = Header(subject, 'utf-8')
             msg['From'] = self._format_sender_address(sender)
             msg['To'] = ', '.join(receivers)
@@ -239,6 +243,7 @@ class EmailSender:
             date_str = datetime.now().strftime('%Y-%m-%d')
             subject = f"📈 股票智能分析报告 - {date_str}"
             msg = MIMEMultipart('related')
+            msg['Date'] = format_datetime(datetime.now().astimezone())
             msg['Subject'] = Header(subject, 'utf-8')
             msg['From'] = self._format_sender_address(sender)
             msg['To'] = ', '.join(receivers)
