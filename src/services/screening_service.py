@@ -1217,11 +1217,14 @@ class ScreeningService:
         max_results: int,
         selection_seed: str = "",
         progress_callback: Callable[[int, str], None] | None = None,
+        research_limit: Optional[int] = None,
     ) -> Dict[str, Any]:
         _ensure_screening_enabled(self.config)
         _ensure_screening_available_for_use()
         _ensure_supported_market(market)
         _ensure_supported_strategy(strategy)
+        if research_limit is not None and not 1 <= research_limit <= DSA_SCREENING_LLM_MAX_CANDIDATES:
+            raise ValueError("research_limit must be between 1 and 12")
 
         candidate_context_cache: Dict[str, Dict[str, Any]] = {}
         try:
@@ -1233,6 +1236,7 @@ class ScreeningService:
                 selection_seed=selection_seed,
                 progress_callback=progress_callback,
                 candidate_context_cache=candidate_context_cache,
+                **({"research_limit": research_limit} if research_limit is not None else {}),
             )
         except ValueError as exc:
             raise HTTPException(
@@ -1271,7 +1275,10 @@ class ScreeningService:
             92,
             "正在补充入选股票的新闻与事件",
         )
-        selected, dsa_enrichment = _enrich_candidates_with_dsa(selected, candidate_context_cache=candidate_context_cache)
+        selected, dsa_enrichment = _enrich_candidates_with_dsa(
+            selected, candidate_context_cache=candidate_context_cache,
+            **({"max_candidates": research_limit} if research_limit is not None else {}),
+        )
         selected = [
             _attach_candidate_explanations(
                 candidate,
@@ -1755,6 +1762,7 @@ def _call_screening_screen(
     selection_seed: str = "",
     progress_callback: Callable[[int, str], None] | None = None,
     candidate_context_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+    research_limit: Optional[int] = None,
 ) -> Any:
     # Environment bridging is process-global, so keep it brief: materialize an
     # immutable pipeline config while holding the lock, then release it before
@@ -1766,6 +1774,7 @@ def _call_screening_screen(
             max_results=max_results,
             include_news=pipeline_config.has_llm_config(),
             candidate_context_cache=candidate_context_cache,
+            **({"research_limit": research_limit} if research_limit is not None else {}),
         )
 
     daily_history_fetcher = _build_screening_dsa_daily_history_fetcher()
@@ -2998,6 +3007,7 @@ def _build_screening_context(
     max_results: Optional[int] = None,
     include_news: bool = False,
     candidate_context_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+    research_limit: Optional[int] = None,
 ) -> Dict[str, Any]:
     # context.llm.model/fallback/model_list 与 LiteLLM 路由语义保持一致，
     # 参见 https://docs.litellm.ai/docs/proxy/configs#the-model_list-key
@@ -3027,7 +3037,7 @@ def _build_screening_context(
         "dsa": {
             "contract_version": "1",
             "mode": "pre_rank_research" if include_news else "pre_rank_light",
-            "max_candidates": DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES,
+            "max_candidates": research_limit or DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES,
             "include_news": include_news,
             "news_max_results": 3 if include_news else 0,
             "capabilities": [
@@ -3514,10 +3524,11 @@ def _enrich_candidates_with_dsa(
     candidates: List[Dict[str, Any]],
     *,
     candidate_context_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+    max_candidates: int = DSA_ENRICHMENT_MAX_CANDIDATES,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     enriched_count = 0
     warnings: List[str] = []
-    limit = min(len(candidates), DSA_ENRICHMENT_MAX_CANDIDATES)
+    limit = min(len(candidates), max_candidates)
 
     for index, candidate in enumerate(candidates):
         if index >= limit:
@@ -3569,7 +3580,7 @@ def _enrich_candidates_with_dsa(
 
     return candidates, {
         "enabled": True,
-        "max_candidates": DSA_ENRICHMENT_MAX_CANDIDATES,
+        "max_candidates": max_candidates,
         "requested_count": limit,
         "enriched_count": enriched_count,
         "warnings": _dedupe_strings(warnings),
