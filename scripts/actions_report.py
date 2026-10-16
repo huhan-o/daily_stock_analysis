@@ -164,6 +164,7 @@ def run_service(task: str) -> tuple[str, int]:
         requested = bounded_int("ACTIONS_MAX_RESULTS", 10, 1, 10)
         os.environ.setdefault("LLM_TIMEOUT_SEC", "240")
         os.environ.setdefault("LLM_MAX_TOKENS", "6144")
+        os.environ.setdefault("LLM_RANKING_PROMPT_MAX_CHARS", "64000")
         data = service.screen(strategy=strategy, market="cn", max_results=requested, research_limit=12)
         attach_technical_plans(data)
         return render_screening(data, requested=requested)
