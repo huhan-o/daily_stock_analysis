@@ -45,7 +45,7 @@ on:
       max_results:
         description: '候选股数量（1–10）；不是 API 调用次数上限'
         type: choice
-        default: '3'
+        default: '10'
         options: ['1', '3', '5', '10']
       agent_skills:
         description: '策略模式技能，逗号分隔；留空使用 Repository variable 或默认技能'
@@ -76,6 +76,8 @@ concurrency:
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
     # 兼容误将 STOCK_LIST 配到同名 Environment variables 的场景；
     # 推荐位置仍是 Settings -> Secrets and variables -> Actions -> Repository variables。
     environment: STOCK_LIST
@@ -130,7 +132,9 @@ jobs:
           ACTIONS_NOTIFY: ${{ github.event_name != 'workflow_dispatch' || inputs.notify }}
           ACTIONS_DAILY_EXTRAS: ${{ github.event_name == 'schedule' && (vars.ACTIONS_DAILY_EXTRAS || 'true') || github.event.inputs.extras || 'false' }}
           ACTIONS_SCREENING_STRATEGY: ${{ github.event.inputs.screening_strategy || vars.ACTIONS_SCREENING_STRATEGY || 'balanced_alpha' }}
-          ACTIONS_MAX_RESULTS: ${{ github.event.inputs.max_results || vars.ACTIONS_MAX_RESULTS || '3' }}
+          ACTIONS_MAX_RESULTS: ${{ github.event.inputs.max_results || vars.ACTIONS_MAX_RESULTS || '10' }}
+          LLM_TIMEOUT_SEC: ${{ vars.LLM_TIMEOUT_SEC || '240' }}
+          LLM_MAX_TOKENS: ${{ vars.LLM_MAX_TOKENS || '6144' }}
           ACTIONS_TASK_TIMEOUT_SECONDS: ${{ vars.ACTIONS_TASK_TIMEOUT_SECONDS || '900' }}
           DATABASE_PATH: ./data/stock_analysis.db
           AGENT_MODE: 'false'
