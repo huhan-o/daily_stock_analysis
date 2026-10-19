@@ -1,0 +1,31 @@
+name: Fix Changelog
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Fix
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/ZhuLinsen/daily_stock_analysis.git
+          git fetch --no-tags upstream main
+          git show upstream/main:docs/CHANGELOG.md > /tmp/upstream_changelog.md
+          echo "aW1wb3J0IHN5cwpjdXJfcGF0aCwgdXBfcGF0aCwgb3V0X3BhdGggPSBzeXMuYXJndlsxXSwgc3lzLmFyZ3ZbMl0sIHN5cy5hcmd2WzNdCktFWVMgPSBbJ0FjdGlvbnPpgInogqHpgq7ku7bnsr7nroAnLCAn5Zug5a2Q562b6YCJ5YWl5Zu0JywgJ+ebmOS4reS7t+agvOa1i+eulycsICfmianlpKfmlrDpl7vnoJTnqbbopobnm5YnLCAn5aKe5Yqg5YWo5biC5Zy66YCJ6IKhJ10KY3VyID0gb3BlbihjdXJfcGF0aCwgZW5jb2Rpbmc9J3V0Zi04JykucmVhZCgpLnNwbGl0bGluZXMoKQpidWxsZXRzID0gW10KZm9yIGsgaW4gS0VZUzoKICAgIGhpdCA9IG5leHQoKGwgZm9yIGwgaW4gY3VyIGlmIGsgaW4gbCBhbmQgbC5zdGFydHN3aXRoKCctIFsnKSksIE5vbmUpCiAgICBpZiBoaXQgaXMgTm9uZToKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCdtaXNzaW5nIGJ1bGxldCBmb3IgJyArIGspCiAgICBidWxsZXRzLmFwcGVuZChoaXQpCnVwID0gb3Blbih1cF9wYXRoLCBlbmNvZGluZz0ndXRmLTgnKS5yZWFkKCkKaSA9IHVwLmluZGV4KCcjIyBbMy4zMy4wXScpCm91dCA9IHVwWzppXSArICdcbicuam9pbihidWxsZXRzKSArICdcblxuJyArIHVwW2k6XQpvcGVuKG91dF9wYXRoLCAndycsIGVuY29kaW5nPSd1dGYtOCcpLndyaXRlKG91dCkKcHJpbnQoJ3dyaXR0ZW4nLCBvdXRfcGF0aCwgJ2NoYXJzJywgbGVuKG91dCkpCg==" | base64 -d > /tmp/fix.py
+          python3 /tmp/fix.py docs/CHANGELOG.md /tmp/upstream_changelog.md docs/CHANGELOG.md
+          git rm -q .github/workflows/fix-changelog.yml
+          git add docs/CHANGELOG.md
+          git commit -m "docs: remove duplicated changelog entries from union merge"
+          git log --oneline -2
+          git push origin main
