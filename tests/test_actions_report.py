@@ -263,7 +263,7 @@ def test_missing_and_invalid_state(tmp_path):
 def test_workflow_exposes_modes_safely_and_history_is_opt_in():
     text = (ROOT / ".github/workflows/00-daily-analysis.yml").read_text()
     workflow = yaml.load(text, Loader=yaml.BaseLoader)
-    assert workflow["on"]["schedule"] == [{"cron": "0 10 * * 1-5"}]
+    assert workflow["on"]["schedule"] == [{"cron": "0 23 * * 0-4"}]
     inputs = workflow["on"]["workflow_dispatch"]["inputs"]
     assert set(inputs["mode"]["options"]) == set(batch.MODES)
     assert set(inputs["screening_strategy"]["options"]) == set(batch.STRATEGIES)
@@ -271,6 +271,11 @@ def test_workflow_exposes_modes_safely_and_history_is_opt_in():
     assert workflow["permissions"] == {"contents": "read"}
     steps = workflow["jobs"]["analyze"]["steps"]
     execution = next(s for s in steps if s.get("id") == "analysis")
+    calendar_check = next(s for s in steps if s.get("id") == "cn-trading-day")
+    assert calendar_check["if"] == "github.event_name == 'schedule'"
+    assert 'get_calendar("XSHG")' in calendar_check["run"]
+    assert "steps.cn-trading-day.outputs.open == 'true'" in execution["if"]
+    assert "github.event.inputs.force_run == 'true'" in execution["if"]
     assert "python -m scripts.actions_report" in execution["run"]
     assert "${{ github.event.inputs." not in execution["run"]
     assert execution["env"]["BOCHA_API_KEYS"] == "${{ secrets.BOCHA_API_KEYS }}"
