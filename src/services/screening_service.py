@@ -1218,6 +1218,7 @@ class ScreeningService:
         selection_seed: str = "",
         progress_callback: Callable[[int, str], None] | None = None,
         research_limit: Optional[int] = None,
+        recommendation_policy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         _ensure_screening_enabled(self.config)
         _ensure_screening_available_for_use()
@@ -1237,6 +1238,7 @@ class ScreeningService:
                 progress_callback=progress_callback,
                 candidate_context_cache=candidate_context_cache,
                 **({"research_limit": research_limit} if research_limit is not None else {}),
+                **({"recommendation_policy": recommendation_policy} if recommendation_policy is not None else {}),
             )
         except ValueError as exc:
             raise HTTPException(
@@ -1763,6 +1765,7 @@ def _call_screening_screen(
     progress_callback: Callable[[int, str], None] | None = None,
     candidate_context_cache: Optional[Dict[str, Dict[str, Any]]] = None,
     research_limit: Optional[int] = None,
+    recommendation_policy: Optional[Dict[str, Any]] = None,
 ) -> Any:
     # Environment bridging is process-global, so keep it brief: materialize an
     # immutable pipeline config while holding the lock, then release it before
@@ -1776,6 +1779,13 @@ def _call_screening_screen(
             candidate_context_cache=candidate_context_cache,
             **({"research_limit": research_limit} if research_limit is not None else {}),
         )
+
+    if recommendation_policy is not None:
+        if recommendation_policy.get("group") not in {"high", "medium", "low"}:
+            raise ValueError("Unknown recommendation risk group")
+        pipeline_context["recommendations"] = recommendation_policy
+        pipeline_config.daily_enrich_enabled = True
+        pipeline_config.daily_enrich_max_candidates = 48
 
     daily_history_fetcher = _build_screening_dsa_daily_history_fetcher()
     with _screening_litellm_headers(config):
