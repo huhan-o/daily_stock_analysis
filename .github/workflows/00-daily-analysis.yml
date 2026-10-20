@@ -28,10 +28,11 @@ on:
         type: string
         required: false
       screening_strategy:
-        description: '全市场选股策略'
+        description: '选股策略：risk_groups 为高、中、低风险各10只'
         type: choice
-        default: balanced_alpha
+        default: risk_groups
         options:
+          - risk_groups
           - balanced_alpha
           - blue_chip_income
           - capital_heat
@@ -43,7 +44,7 @@ on:
           - shrink_pullback
           - volume_breakout
       max_results:
-        description: '候选股数量（1–10）；不是 API 调用次数上限'
+        description: '每组候选数量（1–10）；risk_groups 默认共30只'
         type: choice
         default: '10'
         options: ['1', '3', '5', '10']
@@ -149,13 +150,13 @@ jobs:
           ACTIONS_FORCE_RUN: ${{ github.event.inputs.force_run || 'false' }}
           ACTIONS_NOTIFY: ${{ github.event_name != 'workflow_dispatch' || inputs.notify }}
           ACTIONS_DAILY_EXTRAS: ${{ github.event_name == 'schedule' && (vars.ACTIONS_DAILY_EXTRAS || 'true') || github.event.inputs.extras || 'false' }}
-          ACTIONS_SCREENING_STRATEGY: ${{ github.event.inputs.screening_strategy || vars.ACTIONS_SCREENING_STRATEGY || 'balanced_alpha' }}
+          ACTIONS_SCREENING_STRATEGY: ${{ github.event.inputs.screening_strategy || vars.ACTIONS_SCREENING_STRATEGY || 'risk_groups' }}
           ACTIONS_MAX_RESULTS: ${{ github.event.inputs.max_results || vars.ACTIONS_MAX_RESULTS || '10' }}
           LLM_TIMEOUT_SEC: ${{ vars.LLM_TIMEOUT_SEC || '240' }}
           LLM_MAX_TOKENS: ${{ vars.LLM_MAX_TOKENS || '6144' }}
           LLM_RANKING_PROMPT_MAX_CHARS: ${{ vars.LLM_RANKING_PROMPT_MAX_CHARS || '64000' }}
           SNAPSHOT_SOURCE_PRIORITY: ${{ vars.SNAPSHOT_SOURCE_PRIORITY || (secrets.TUSHARE_TOKEN && 'tushare,em_datacenter,sina,efinance,akshare_em') || 'em_datacenter,sina,efinance,akshare_em' }}
-          ACTIONS_TASK_TIMEOUT_SECONDS: ${{ vars.ACTIONS_TASK_TIMEOUT_SECONDS || '900' }}
+          ACTIONS_TASK_TIMEOUT_SECONDS: ${{ vars.ACTIONS_TASK_TIMEOUT_SECONDS || '1800' }}
           DATABASE_PATH: ./data/stock_analysis.db
           AGENT_MODE: 'false'
           AGENT_ARCH: ${{ vars.AGENT_ARCH || 'single' }}
