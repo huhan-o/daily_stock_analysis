@@ -23,7 +23,7 @@ MODES = (
     "strategy", "backtest", "etf-rotation", "data-check",
 )
 STRATEGIES = (
-    "balanced_alpha", "blue_chip_income", "capital_heat", "dual_low",
+    "risk_groups", "balanced_alpha", "blue_chip_income", "capital_heat", "dual_low",
     "low_volatility_quality", "momentum_quality", "oversold_reversal",
     "quality_value", "shrink_pullback", "volume_breakout",
 )
@@ -145,6 +145,45 @@ def render_hotspots(data: dict) -> tuple[str, int]:
     return "\n".join(lines), PARTIAL if degraded else 0
 
 
+def render_recommendations(data: dict, *, compact: bool = False) -> tuple[str, int]:
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    lines = ["# 分风险选股报告", "", f"目标 {data['requested']} 只，实际 {len(data['candidates'])} 只；各组独立筛选、股票不重复。",
+             "", "高、中风险组取自本次上涨热点的成分股；全报告银行最多2只，每组同一已知行业或热点最多3只。",
+             "风险为波动分档：高风险波动较大；中风险控制波动与回撤；低风险须通过低波动、估值和日线质量筛选，不代表保本。"]
+    partial = bool(data.get("warnings")) or len(data.get("groups") or []) != 3
+    for group in data.get("groups") or []:
+        candidates = group["candidates"]
+        partial |= render_screening(group, requested=group["requested"])[1] == PARTIAL
+        lines.extend(["", f"## {group['title']}（{len(candidates)}/{group['requested']}只）", ""])
+        if len(candidates) < group["requested"]:
+            lines.append("数量不足：热点、风险、有效价格或分散条件不满足，未用其他风险档或重复股票补数。")
+        if compact:
+            lines.extend(["", "| 股票 | 热点/行业 | 推荐理由 | 目标购入价 | 止损价 | 止盈价 |",
+                          "| --- | --- | --- | --- | --- | --- |"])
+            for item in candidates:
+                plan = item["technical_plan"]
+                fields = [f"{item['name']}（{item['code']}）", item.get("recommendation_topic") or item.get("industry") or "行业待核验",
+                          item["recommendation_reason"], f"{plan['entry']:.2f}", f"{plan['stop_loss']:.2f}", f"{plan['take_profit']:.2f}"]
+                lines.append("| " + " | ".join(cell(value) for value in fields) + " |")
+            dates = sorted({item["technical_plan"]["as_of"] for item in candidates})
+            if dates:
+                lines.append("\n价格依据：" + cell("、".join(dates)) + "完整日线，单位元。")
+            if group.get("llm_failure_reason") or group.get("ranking_mode") != "llm":
+                lines.append("\n模型分析未完成，本组采用量价规则筛选；详细诊断见完整报告。")
+        else:
+            for index, item in enumerate(candidates, 1):
+                lines.extend(["", f"推荐理由：{cell(item['recommendation_reason'])}",
+                              f"热点归属来源：{cell(item.get('recommendation_source'))}"])
+                lines.extend(candidate_details(item, index, cell, today))
+            lines.extend(["", *diagnostics(group)])
+    if data.get("warnings"):
+        lines.extend(["", "数据提醒：部分热点来源不可用，详见完整报告。"] if compact else ["", *diagnostics(data)])
+    lines.extend(["", "目标购入价是最新完整日线收盘价的参考入场假设；止损取20日低点与购入价−2×ATR20的较高值；"
+                  "止盈=购入价+2×风险距离。观察5–20个交易日，跳空或重大消息变化须重算。",
+                  "热点关联来自板块成分关系，不能证明新闻导致涨跌。新闻证据、来源及逐股风险见完整报告。"])
+    return "\n".join(lines), PARTIAL if partial else 0
+
+
 def render_backtest(stats: dict, summary: dict | None) -> tuple[str, int]:
     lines = ["# 历史报告回测", "", "这是历史建议的事后评估，不是未来收益保证。",
              f"本次处理 {stats.get('processed', 0)} 条；完成 {stats.get('completed', 0)} 条；"
@@ -175,13 +214,25 @@ def run_service(task: str) -> tuple[str, int]:
         service = ScreeningService(config, db_manager=DatabaseManager.get_instance())
         if task == "hotspots":
             return render_hotspots(service.hotspots(top=12, refresh=True, include_details=False))
-        strategy = os.getenv("ACTIONS_SCREENING_STRATEGY") or "balanced_alpha"
+        strategy = os.getenv("ACTIONS_SCREENING_STRATEGY") or "risk_groups"
         if strategy not in STRATEGIES:
             raise ValueError("Unsupported screening strategy")
         requested = bounded_int("ACTIONS_MAX_RESULTS", 10, 1, 10)
         os.environ.setdefault("LLM_TIMEOUT_SEC", "240")
         os.environ.setdefault("LLM_MAX_TOKENS", "6144")
         os.environ.setdefault("LLM_RANKING_PROMPT_MAX_CHARS", "64000")
+        if strategy == "risk_groups":
+            from scripts.actions_risk_screening import build_recommendations
+
+            REPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+            def checkpoint(data):
+                (REPORT_DIR / "actions_screening.md").write_text(render_recommendations(data)[0], encoding="utf-8")
+                (REPORT_DIR / "actions_screening_email.md").write_text(
+                    render_recommendations(data, compact=True)[0], encoding="utf-8")
+
+            data = build_recommendations(service, requested, attach_technical_plans, on_group=checkpoint)
+            return render_recommendations(data)
         data = service.screen(strategy=strategy, market="cn", max_results=requested, research_limit=12)
         attach_technical_plans(data)
         REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -235,9 +286,9 @@ def orchestrate() -> int:
         raise ValueError("Unsupported Actions mode")
     stocks = stock_override()
     notify, force = flag("ACTIONS_NOTIFY", True), flag("ACTIONS_FORCE_RUN")
-    timeout = bounded_int("ACTIONS_TASK_TIMEOUT_SECONDS", 900, 60, 1800)
+    timeout = bounded_int("ACTIONS_TASK_TIMEOUT_SECONDS", 1800, 60, 1800)
     bounded_int("ACTIONS_MAX_RESULTS", 10, 1, 10)
-    if (os.getenv("ACTIONS_SCREENING_STRATEGY") or "balanced_alpha") not in STRATEGIES:
+    if (os.getenv("ACTIONS_SCREENING_STRATEGY") or "risk_groups") not in STRATEGIES:
         raise ValueError("Unsupported screening strategy")
     if mode == "strategy":
         skills = [s.strip() for s in os.getenv("ACTIONS_AGENT_SKILLS", "").split(",") if s.strip()]
