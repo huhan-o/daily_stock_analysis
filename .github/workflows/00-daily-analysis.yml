@@ -1,9 +1,9 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
+  # 定时触发 - 每天北京时间 07:00 (前一日 UTC 23:00)
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '0 23 * * 0-4'     # 周一到周五，北京时间 07:00
   
   # 手动触发
   workflow_dispatch:
@@ -123,8 +123,26 @@ jobs:
         if: vars.ACTIONS_PERSIST_HISTORY == 'true' && steps.history-cache.outputs.cache-matched-key != ''
         run: python -m scripts.actions_report --state restore
 
+      - name: 检查 A 股交易日
+        id: cn-trading-day
+        if: github.event_name == 'schedule'
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import os
+          import exchange_calendars as xcals
+
+          today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+          is_open = xcals.get_calendar("XSHG").is_session(today.isoformat())
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"open={str(is_open).lower()}\n")
+          print(f"A-share session {today}: {is_open}")
+          PY
+
       - name: 执行股票分析
         id: analysis
+        if: github.event_name != 'schedule' || steps.cn-trading-day.outputs.open == 'true' || github.event.inputs.force_run == 'true'
         env:
           ACTIONS_MODE: ${{ github.event.inputs.mode || 'full' }}
           ACTIONS_STOCKS: ${{ github.event.inputs.stocks }}
