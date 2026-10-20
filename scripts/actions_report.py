@@ -280,7 +280,7 @@ def orchestrate() -> int:
             email_supplements.append(supplements[-1])
     summary = "# 选股与热点补充报告\n\n" + "\n".join(f"- {r['task']}：{r['status']}（{r['exit_code']}）" for r in results)
     summary += f"\n\n分析开始：{started_at.isoformat()}（北京时间）；触发方式：{cell(os.getenv('GITHUB_EVENT_NAME', '本地/手动'))}。"
-    summary += "\n\n定时计划：工作日18:00北京时间。GitHub Actions可能延迟触发，计划时间不等于邮件到达时间；分析开始前还包含排队和安装依赖。"
+    summary += "\n\n定时计划：工作日07:00北京时间；A股休市日跳过。GitHub Actions可能延迟触发，计划时间不等于邮件到达时间；分析开始前还包含排队和安装依赖。"
     summary += "\n\n数据与模型可能降级；完成仅表示入口执行完成，详情以报告、日志为准。"
     content = summary + "\n\n---\n\n" + "\n\n---\n\n".join(supplements)
     content += "\n\n生成时间：" + datetime.now(ZoneInfo("Asia/Shanghai")).isoformat() + "\n"
