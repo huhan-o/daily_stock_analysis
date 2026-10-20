@@ -157,6 +157,7 @@ def test_backtest_without_samples_never_invents_accuracy():
 
 
 def test_service_uses_existing_screening_contract(monkeypatch):
+    monkeypatch.setenv("ACTIONS_SCREENING_STRATEGY", "balanced_alpha")
     calls = []
     config = SimpleNamespace(screening_enabled=False, trading_day_check_enabled=True)
     class Service:
@@ -286,7 +287,7 @@ def test_workflow_exposes_modes_safely_and_history_is_opt_in():
             assert step.get("if")
     restore = next(s for s in steps if s.get("id") == "history-cache")
     assert restore["if"] == "vars.ACTIONS_PERSIST_HISTORY == 'true'"
-    assert {p.stem for p in (ROOT / "src/services/screening/strategies").glob("*.yaml")} == set(batch.STRATEGIES)
+    assert {p.stem for p in (ROOT / "src/services/screening/strategies").glob("*.yaml")} == set(batch.STRATEGIES) - {"risk_groups"}
 
 
 def test_regular_reports_cannot_auto_enable_agent_from_configured_skills(monkeypatch):
