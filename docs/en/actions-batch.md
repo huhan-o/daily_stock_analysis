@@ -1,6 +1,6 @@
 # GitHub Actions batch reports
 
-The existing daily workflow retains its weekday 10:00 UTC schedule and original stock/market entry points. It adds bounded batch modes, not a persistent server or broker trading connection.
+The daily workflow runs at 23:00 UTC Sunday–Thursday (07:00 Beijing time Monday–Friday) and retains its original stock/market entry points. GitHub Actions may start late. Scheduled runs check the XSHG calendar before analysis and skip both analysis and email on A-share holidays; calendar errors fail closed. Manual runs are not subject to this scheduled holiday gate. The workflow adds bounded batch modes, not a persistent server or broker trading connection.
 
 | Mode | Purpose |
 | --- | --- |
@@ -23,6 +23,7 @@ Repository variables:
 - `LLM_TIMEOUT_SEC=240`, `LLM_MAX_TOKENS=6144`: Actions screening request timeout and output budget. Timed-out paid calls are not automatically retried; factor fallback remains explicit.
 - `LLM_RANKING_PROMPT_MAX_CHARS=64000`: Actions input character budget covering all 12 researched candidates; non-Actions defaults to 24000. Truncation remains explicit.
 - `SNAPSHOT_SOURCE_PRIORITY=em_datacenter,sina,efinance,akshare_em`: prefer the data-center source verified in hosted runs while retaining fallbacks. A configured Tushare token prepends tushare unless this variable explicitly overrides the order.
+- At 07:00 Beijing time the A-share market has not opened; the latest available quote is normally the most recent trading-session close, not a live intraday quote. News is searched during this run; data-source failures remain explicitly degraded.
 - Intraday price plans exclude today's unfinished bar and require the latest completed trading session; invalid, stale or missing completed bars still produce no plan.
 - `ACTIONS_TASK_TIMEOUT_SECONDS=900` (60–1800): per-task budget; hotspots are capped at 180 seconds. `ANALYSIS_TIMEOUT_MINUTES` defaults to 60 for the entire job, including setup; existing overrides still apply.
 - `AGENT_SKILLS=bull_trend,shrink_pullback`, `AGENT_MAX_STEPS=6`, `AGENT_ARCH=single`: manual Agent defaults. Step limits are not token/cost guarantees. Advanced multi mode needs separate compatibility/cost checks.
