@@ -36,6 +36,7 @@ from src.services.screening.normalize import (
 from src.services.screening.post_analysis import normalize_post_analyzers, run_post_analyzers
 from src.services.screening.ranker import rank_candidates_with_metadata
 from src.services.screening.risk import apply_portfolio_overlay, apply_risk_overlay
+from src.services.screening.recommendations import diverse_frame, diverse_rows, filter_risk, filter_universe
 from src.services.screening.scorer import (
     compute_screen_scores,
     factor_score_columns,
@@ -144,6 +145,7 @@ def screen(
     daily_needed = requires_daily_features(screening.hard_filters)
     daily_requested = config.daily_enrich_enabled if daily_enrich is None else daily_enrich
     daily_limit = daily_enrich_max_candidates or config.daily_enrich_max_candidates
+    recommendation_policy = (context or {}).get("recommendations")
     snapshot_filters = without_daily_filters(screening.hard_filters) if daily_needed else screening.hard_filters
 
     # 2. Fetch snapshot
@@ -156,6 +158,10 @@ def screen(
         cache_ttl_seconds=config.snapshot_cache_ttl_seconds,
         market=market,
     )
+    if recommendation_policy is not None:
+        if snapshot_df.attrs.get("fallback_used"):
+            raise RuntimeError("Stale fallback snapshot cannot produce daily recommendations")
+        snapshot_df = filter_universe(snapshot_df, recommendation_policy)
     effective_industry_map_files = (
         list(industry_map_files)
         if industry_map_files is not None
@@ -232,6 +238,9 @@ def screen(
         provisional = _sort_screened_candidates(compute_screen_scores(df, screening), screening)
         enrich_count = min(daily_limit, len(provisional))
         daily_candidates = provisional.head(enrich_count)
+        if recommendation_policy is not None:
+            daily_candidates = diverse_frame(provisional, enrich_count, recommendation_policy, research=True)
+            enrich_count = len(daily_candidates)
         try:
             enriched = enrich_daily_features(
                 daily_candidates,
@@ -325,6 +334,16 @@ def screen(
             portfolio_diversity_enabled=config.portfolio_diversity_enabled,
         )
 
+    if recommendation_policy is not None:
+        df = filter_risk(df, recommendation_policy["group"])
+        after_filter_count = len(df)
+        if df.empty:
+            return ScreenResult(
+                strategy=strategy, market=market, run_id=run_id, snapshot_count=snapshot_count,
+                snapshot_source=snapshot_source, after_filter_count=0, source_errors=source_errors,
+                degradation=[*degradation, "No candidates with verified daily risk data in this group"],
+            )
+
     # 4. Compute screen_score
     df = _sort_screened_candidates(compute_screen_scores(df, screening), screening)
 
@@ -335,6 +354,8 @@ def screen(
         len(df),
     )
     df_top = df.head(top_k)
+    if recommendation_policy is not None:
+        df_top = diverse_frame(df, top_k, recommendation_policy)
 
     # 6. Build Pick list
     picks = _df_to_picks(df_top)
@@ -528,6 +549,15 @@ def screen(
         analyzer_names=analyzer_names,
     )
     picks = selection_variant.picks
+    if recommendation_policy is not None:
+        topics = dict(zip(df_top["code"], df_top["recommendation_topic"]))
+        by_code = {pick.code: pick for pick in picks}
+        rows = [{"code": pick.code, "name": pick.name, "industry": pick.industry,
+                 "recommendation_topic": topics.get(pick.code, "")} for pick in picks]
+        selected = diverse_rows(rows, output_count, bank_budget=recommendation_policy.get("bank_budget", 2))
+        picks = [by_code[row["code"]] for row in selected]
+        for index, pick in enumerate(picks, 1):
+            pick.rank = index
     _emit_progress(progress_callback, 88, "选股核心流程完成")
 
     return ScreenResult(
