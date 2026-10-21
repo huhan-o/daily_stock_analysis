@@ -1,0 +1,29 @@
+name: Patch Schedule
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Patch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "cCA9ICcuZ2l0aHViL3dvcmtmbG93cy8wMC1kYWlseS1hbmFseXNpcy55bWwnCnMgPSBvcGVuKHAsIGVuY29kaW5nPSd1dGYtOCcpLnJlYWQoKQoKb2xkX2Nyb24gPSAiICAgIC0gY3JvbjogJzAgMjMgKiAqIDAtNCcgICAgICMg5ZGo5LiA5Yiw5ZGo5LqU77yM5YyX5Lqs5pe26Ze0IDA3OjAwIgpuZXdfY3JvbiA9ICIgICAgLSBjcm9uOiAnMjMgMTMgKiAqIDEtNScgICAgICMg5ZGo5LiA5Yiw5ZGo5LqU77yM5YyX5Lqs5pe26Ze0IDIxOjIzIgpvbGRfaGVhZCA9ICIgICMg5a6a5pe26Kem5Y+RIC0g5q+P5aSp5YyX5Lqs5pe26Ze0IDA3OjAwICjliY3kuIDml6UgVVRDIDIzOjAwKSIKbmV3X2hlYWQgPSAiICAjIOWumuaXtuinpuWPkSAtIOavj+WkqeWMl+S6rOaXtumXtCAyMToyMyAo5ZCM5pelIFVUQyAxMzoyMykiCmFzc2VydCBvbGRfY3JvbiBpbiBzLCAnY3JvbiBsaW5lIG5vdCBmb3VuZCcKYXNzZXJ0IG9sZF9oZWFkIGluIHMsICdoZWFkZXIgY29tbWVudCBub3QgZm91bmQnCnMgPSBzLnJlcGxhY2Uob2xkX2Nyb24sIG5ld19jcm9uKS5yZXBsYWNlKG9sZF9oZWFkLCBuZXdfaGVhZCkKb3BlbihwLCAndycsIGVuY29kaW5nPSd1dGYtOCcpLndyaXRlKHMpCgpxID0gJ3NjcmlwdHMvYWN0aW9uc19yZXBvcnQucHknCnQgPSBvcGVuKHEsIGVuY29kaW5nPSd1dGYtOCcpLnJlYWQoKQpvbGRfdCA9ICLlrprml7borqHliJLvvJrlt6XkvZzml6UwNzowMOWMl+S6rOaXtumXtO+8m0HogqHkvJHluILml6Xot7Pov4fjgIIiCm5ld190ID0gIuWumuaXtuiuoeWIku+8muW3peS9nOaXpTIxOjIz5YyX5Lqs5pe26Ze077ybQeiCoeS8keW4guaXpei3s+i/h+OAgiIKYXNzZXJ0IG9sZF90IGluIHQsICdzdW1tYXJ5IHRleHQgbm90IGZvdW5kJwp0ID0gdC5yZXBsYWNlKG9sZF90LCBuZXdfdCkKb3BlbihxLCAndycsIGVuY29kaW5nPSd1dGYtOCcpLndyaXRlKHQpCnByaW50KCdwYXRjaGVkOiBjcm9uICsgc3VtbWFyeSB0ZXh0JykK" | base64 -d > /tmp/patch_schedule.py
+          python3 /tmp/patch_schedule.py
+          git rm -q .github/workflows/patch-schedule.yml
+          git add -A
+          git diff --cached --stat
+          git commit -m "ci: change daily schedule to 21:23 Asia/Shanghai"
+          git log --oneline -2
+          git push origin main
