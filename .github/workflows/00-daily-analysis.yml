@@ -85,33 +85,73 @@ jobs:
     continue-on-error: true
     outputs:
       skip: ${{ steps.check.outputs.skip }}
+      session: ${{ steps.check.outputs.session }}
     steps:
-      - name: 检查今天是否已有成功的定时运行
+      - name: 解析目标交易日并检查是否已经跑过
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/${{ github.repository }}/actions/workflows/00-daily-analysis.yml/runs?event=schedule&status=success&per_page=20" \
-            --jq '.workflow_runs[].run_started_at' > runs.txt
+          pip install --quiet exchange_calendars
+          gh api "repos/${{ github.repository }}/actions/workflows/00-daily-analysis.yml/runs?event=schedule&status=success&per_page=40" \
+            --jq '.workflow_runs[] | "\(.run_number)\t\(.run_started_at)"' > runs.tsv
           python3 - <<'PY'
-          import os
+          import os, urllib.request, json
           from datetime import datetime, timedelta
           from zoneinfo import ZoneInfo
+          import exchange_calendars as xcals
 
           tz = ZoneInfo("Asia/Shanghai")
+          cal = xcals.get_calendar("XSHG")
 
-          # 被 GitHub 延迟到凌晨的运行仍归属前一个交易日
-          def session_day(moment):
-              return (moment.astimezone(tz) - timedelta(hours=6)).date()
+          # GitHub 对 fork 的 schedule 会延迟数小时，run 的实际启动时间不能代表它属于哪个交易日。
+          # 统一口径：目标交易日 = 启动时刻之前最近一个已收盘（15:00 后）的 A 股交易日。
+          def session_for(moment):
+              d = moment.astimezone(tz)
+              day = d.date()
+              if cal.is_session(day.isoformat()) and d.hour < 15:
+                  day = day - timedelta(days=1)
+              return cal.date_to_session(day.isoformat(), direction="previous").date()
 
-          today = session_day(datetime.now(tz))
-          done = any(
-              session_day(datetime.fromisoformat(line.strip().replace("Z", "+00:00"))) == today
-              for line in open("runs.txt") if line.strip()
-          )
-          print(f"Successful scheduled run already today ({today}): {done}")
+          target = session_for(datetime.now(tz))
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+
+          # 非交易日空转的运行也是 success，但没有真正分析。analyze job 只在实际执行后
+          # 上传 analysis-done-<run_number> 标记，guard 据此判断名额是否已被占用。
+          def produced_report(run_number):
+              url = f"https://api.github.com/repos/{repo}/actions/artifacts?name=analysis-done-{run_number}"
+              req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}",
+                                                         "Accept": "application/vnd.github+json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      data = json.load(resp)
+              except Exception as exc:
+                  # 查不到时保守认为已跑过，避免重复发送邮件
+                  print(f"artifact lookup failed for #{run_number}: {exc}")
+                  return True
+              return data.get("total_count", 0) > 0
+
+          done = False
+          for line in open("runs.tsv"):
+              line = line.strip()
+              if not line:
+                  continue
+              number, started = line.split("\t")
+              moment = datetime.fromisoformat(started.replace("Z", "+00:00"))
+              if session_for(moment) != target:
+                  continue
+              if produced_report(number):
+                  print(f"run #{number} already covered session {target}")
+                  done = True
+                  break
+              print(f"run #{number} matched session {target} but produced no report; not counted")
+
+          print(f"target session {target}, already done: {done}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"skip={str(done).lower()}\n")
+              output.write(f"session={target.isoformat()}\n")
           PY
 
   analyze:
@@ -168,6 +208,8 @@ jobs:
       - name: 检查 A 股交易日
         id: cn-trading-day
         if: github.event_name == 'schedule'
+        env:
+          TARGET_SESSION: ${{ needs.guard.outputs.session }}
         run: |
           python - <<'PY'
           from datetime import datetime
@@ -175,20 +217,75 @@ jobs:
           import os
           import exchange_calendars as xcals
 
-          today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
-          is_open = xcals.get_calendar("XSHG").is_session(today.isoformat())
+          cal = xcals.get_calendar("XSHG")
+          # 任务可能被 GitHub 延迟到次日甚至周末才执行，必须判断 guard 解析出的目标交易日，
+          # 而不是 runner 当前的日期，否则周五的任务漂到周六会被误判为休市而空转。
+          target = os.environ.get("TARGET_SESSION", "").strip()
+          if not target:
+              target = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+              print("guard session unavailable, falling back to current date")
+          is_open = cal.is_session(target)
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"open={str(is_open).lower()}\n")
-          print(f"A-share session {today}: {is_open}")
+              output.write(f"session={target}\n")
+          print(f"A-share session {target}: {is_open}")
+          PY
+
+      - name: 判断定时触发是否已过期
+        id: freshness
+        if: github.event_name == 'schedule'
+        env:
+          TARGET_SESSION: ${{ steps.cn-trading-day.outputs.session }}
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import os
+          import exchange_calendars as xcals
+
+          # 漂移跨过了下一个交易日时，行情已经是新的一天，再按旧交易日出报告会用错数据。
+          cal = xcals.get_calendar("XSHG")
+          target = os.environ.get("TARGET_SESSION", "").strip()
+          now = datetime.now(ZoneInfo("Asia/Shanghai"))
+          stale = False
+          if target:
+              sessions = cal.sessions_in_range(target, now.date().isoformat())
+              stale = len(sessions) > 1 and now.hour >= 9
+          if stale:
+              print(f"::warning::Scheduled run for {target} is stale "
+                    f"(now {now:%Y-%m-%d %H:%M}, a newer session has opened); skipping analysis.")
+          else:
+              print(f"Scheduled run for {target or 'n/a'} is still fresh.")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"stale={str(stale).lower()}\n")
+          PY
+
+      - name: 判断运行日自身是否为交易日
+        id: wall-clock
+        if: github.event_name == 'schedule'
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import os
+          import exchange_calendars as xcals
+
+          today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+          is_open = xcals.get_calendar("XSHG").is_session(today)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"open={str(is_open).lower()}\n")
+          print(f"runner wall-clock date {today} is session: {is_open}")
           PY
 
       - name: 执行股票分析
         id: analysis
-        if: github.event_name != 'schedule' || steps.cn-trading-day.outputs.open == 'true' || github.event.inputs.force_run == 'true'
+        if: github.event_name != 'schedule' || (steps.cn-trading-day.outputs.open == 'true' && steps.freshness.outputs.stale != 'true') || github.event.inputs.force_run == 'true'
         env:
           ACTIONS_MODE: ${{ github.event.inputs.mode || 'full' }}
           ACTIONS_STOCKS: ${{ github.event.inputs.stocks }}
-          ACTIONS_FORCE_RUN: ${{ github.event.inputs.force_run || 'false' }}
+          # 定时任务被延迟到非交易日（如周五的任务周六才跑）时，目标交易日已确认有效，
+          # 但 main.py 内部会按 runner 当天日期再判一次并拦截，这里传 force 跳过该复查。
+          ACTIONS_FORCE_RUN: ${{ (github.event.inputs.force_run == 'true' || (github.event_name == 'schedule' && steps.cn-trading-day.outputs.open == 'true' && steps.wall-clock.outputs.open != 'true')) && 'true' || 'false' }}
           ACTIONS_NOTIFY: ${{ github.event_name != 'workflow_dispatch' || inputs.notify }}
           ACTIONS_DAILY_EXTRAS: ${{ github.event_name == 'schedule' && (vars.ACTIONS_DAILY_EXTRAS || 'true') || github.event.inputs.extras || 'false' }}
           ACTIONS_SCREENING_STRATEGY: ${{ github.event.inputs.screening_strategy || vars.ACTIONS_SCREENING_STRATEGY || 'risk_groups' }}
@@ -697,6 +794,21 @@ jobs:
           echo ""
           
           python -m scripts.actions_report
+
+      - name: 标记本次已完成分析
+        if: steps.analysis.outcome == 'success'
+        run: |
+          mkdir -p .analysis-marker
+          echo "session=${{ steps.cn-trading-day.outputs.session }}" > .analysis-marker/done.txt
+          echo "run=${{ github.run_number }}" >> .analysis-marker/done.txt
+
+      - name: 上传完成标记
+        if: steps.analysis.outcome == 'success'
+        uses: actions/upload-artifact@v6
+        with:
+          name: analysis-done-${{ github.run_number }}
+          path: .analysis-marker/
+          retention-days: 10
 
       - name: 创建可选历史快照
         id: history-backup
