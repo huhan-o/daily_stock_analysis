@@ -1116,6 +1116,7 @@ class ScreeningService:
         provider: str = "",
         refresh: bool = False,
         include_search: bool = False,
+        top_stocks: int = 30,
     ) -> Dict[str, Any]:
         _ensure_screening_enabled(self.config)
         _ensure_screening_available_for_use()
@@ -1128,7 +1129,7 @@ class ScreeningService:
         provider_name, provider_arg = _resolve_hotspot_provider(provider)
         if not isinstance(provider_arg, DsaEastMoneyHotspotProvider):
             provider_arg = DsaEastMoneyHotspotProvider()
-        cached = None if refresh else _load_screening_hotspot_detail_cache(provider=provider_name, topic=topic_text)
+        cached = None if refresh or top_stocks != 30 else _load_screening_hotspot_detail_cache(provider=provider_name, topic=topic_text)
         if cached is not None:
             if not include_search:
                 return cached
@@ -1145,7 +1146,7 @@ class ScreeningService:
                     detail = get_hotspot_detail(
                         topic_text,
                         provider=provider_arg,
-                        top_stocks=30,
+                        top_stocks=top_stocks,
                         history_path=_screening_hotspot_history_path(),
                         fallback_cache_path=_screening_hotspot_cache_path(),
                     )
@@ -1167,9 +1168,9 @@ class ScreeningService:
                         hotspot_helper_error,
                     )
             else:
-                normalized = provider_arg.hotspot_detail(topic_text)
+                normalized = _provider_hotspot_detail(provider_arg, topic_text, top_stocks)
             if not normalized:
-                normalized = provider_arg.hotspot_detail(topic_text)
+                normalized = _provider_hotspot_detail(provider_arg, topic_text, top_stocks)
         except Exception as exc:
             stale_cached = _load_screening_hotspot_detail_cache(
                 provider=provider_name,
@@ -1200,11 +1201,13 @@ class ScreeningService:
         base_detail = _remove_non_finite_json_values(
             _strip_hotspot_search_augmentation(normalized)
         )
-        _write_screening_hotspot_detail_cache(
-            provider=provider_name,
-            topic=topic_text,
-            payload=base_detail,
-        )
+        # 缓存只存默认的 30 只视图，避免选股专用的全量成分股污染网页端的热点详情。
+        if top_stocks == 30:
+            _write_screening_hotspot_detail_cache(
+                provider=provider_name,
+                topic=topic_text,
+                payload=base_detail,
+            )
         if include_search:
             return _with_hotspot_search_augmentation(base_detail, topic=topic_text)
         return base_detail
@@ -1437,6 +1440,13 @@ def _hotspot_timeline_to_route(timeline: List[Any]) -> List[Dict[str, Any]]:
         "description": "暂未获取到明确催化事件，可继续观察涨跌幅、成交额和核心个股联动。",
         "source": "fallback",
     }]
+
+
+def _provider_hotspot_detail(provider: Any, topic: str, top_stocks: int) -> Dict[str, Any]:
+    # 默认 30 只时保持原调用方式，兼容只接受 topic 的自定义 provider。
+    if top_stocks == 30:
+        return provider.hotspot_detail(topic)
+    return provider.hotspot_detail(topic, top_stocks=top_stocks)
 
 
 def _merge_provider_hotspot_route_fallback(
@@ -2405,11 +2415,11 @@ class DsaEastMoneyHotspotProvider:
             if label in frames_by_source
         ]
 
-    def hotspot_detail(self, topic: str) -> Dict[str, Any]:
+    def hotspot_detail(self, topic: str, top_stocks: int = 30) -> Dict[str, Any]:
         with self._source_call_budget():
-            return self._hotspot_detail(topic)
+            return self._hotspot_detail(topic, top_stocks=top_stocks)
 
-    def _hotspot_detail(self, topic: str) -> Dict[str, Any]:
+    def _hotspot_detail(self, topic: str, top_stocks: int = 30) -> Dict[str, Any]:
         try:
             summary = self._find_board_change(topic)
         except Exception as exc:
@@ -2448,8 +2458,8 @@ class DsaEastMoneyHotspotProvider:
             "canonical_topic": topic,
             "summary": self._build_hotspot_summary(topic, summary),
             "route": route,
-            "stocks": stocks[:30],
-            "leader_stocks": stocks[:30],
+            "stocks": stocks[:top_stocks],
+            "leader_stocks": stocks[:top_stocks],
             "stock_count": len(stocks),
             "source_errors": [],
         })
