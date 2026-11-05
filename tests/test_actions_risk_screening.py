@@ -147,6 +147,19 @@ def test_stale_or_related_topic_stock_is_not_verified_membership():
     assert set(members) == {"600004"}
 
 
+def test_hotspot_membership_uses_full_board_not_top_movers():
+    # 热度前 30 名几乎都是当日大涨股，会被高/中风险组的涨幅上限全部挡掉，必须取全部成分股。
+    service = Service()
+    requested = []
+    def detail(topic, **kwargs):
+        requested.append(kwargs.get("top_stocks"))
+        return {"provider": "fixture", "stocks": [{"code": str(600000 + j)} for j in range(120)]}
+    service.hotspot_detail = detail
+    members, _ = hotspot_members(service)
+    assert requested and all((value or 0) > 30 for value in requested)
+    assert len(members) == 120
+
+
 @pytest.mark.parametrize("group,code", [("high", "600001"), ("medium", "600002"), ("low", "600003")])
 def test_real_pipeline_filters_daily_risk_before_shortlisting(monkeypatch, tmp_path, group, code):
     from src.core.trading_calendar import get_effective_trading_date, get_trading_dates
