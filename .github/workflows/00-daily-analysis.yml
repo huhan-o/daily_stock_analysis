@@ -798,16 +798,18 @@ jobs:
       - name: 标记本次已完成分析
         if: steps.analysis.outcome == 'success'
         run: |
-          mkdir -p .analysis-marker
-          echo "session=${{ steps.cn-trading-day.outputs.session }}" > .analysis-marker/done.txt
-          echo "run=${{ github.run_number }}" >> .analysis-marker/done.txt
+          mkdir -p analysis-marker
+          echo "session=${{ steps.cn-trading-day.outputs.session }}" > analysis-marker/done.txt
+          echo "run=${{ github.run_number }}" >> analysis-marker/done.txt
 
       - name: 上传完成标记
         if: steps.analysis.outcome == 'success'
         uses: actions/upload-artifact@v6
         with:
           name: analysis-done-${{ github.run_number }}
-          path: .analysis-marker/
+          # 不能用点开头的隐藏目录：upload-artifact 默认跳过隐藏文件，标记会静默丢失导致重复发送
+          path: analysis-marker/
+          if-no-files-found: error
           retention-days: 10
 
       - name: 创建可选历史快照
