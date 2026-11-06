@@ -22,10 +22,23 @@ def finite(value):
         return None
 
 
+# Each of these sits in a different industry label, so the per-industry cap never binds across
+# them and the low-volatility band alone returns an all-dividend list.
+_DIVIDEND_NEEDLES = (
+    "银行", "电力", "高速", "公路", "煤炭", "运营商", "通信服务",
+    "港口", "燃气", "水务", "保险", "铁路",
+)
+
+
 def sector(row):
     name = safe_text(row.get("name"))
     industry = safe_text(row.get("industry"))
     return "银行" if "银行" in name or "银行" in industry else industry
+
+
+def is_dividend(row):
+    text = f"{safe_text(row.get('name'))} {safe_text(row.get('industry'))} {safe_text(row.get('concepts'))}"
+    return any(needle in text for needle in _DIVIDEND_NEEDLES)
 
 
 def risk_band(row):
@@ -42,9 +55,12 @@ def risk_band(row):
             or not 0 < atr <= 10 or not 0 <= volatility <= 100
             or not -25 <= drawdown <= 0 or abs(change) >= 9.5 or not 0 <= turnover <= 25):
         return ""
-    if atr <= 2 and volatility <= 25 and drawdown >= -6 and abs(change) <= 3 and turnover <= 5:
+    # change_pct only vetoes limit moves above; it must not decide the band. It measures whether a
+    # stock rose today, not how volatile it is, and banding on it made "hotspot member" and
+    # "medium/low band" mutually exclusive, which emptied the medium group.
+    if atr <= 2 and volatility <= 25 and drawdown >= -6 and turnover <= 5:
         return "low"
-    if atr <= 4 and volatility <= 45 and drawdown >= -12 and abs(change) <= 5 and turnover <= 10:
+    if atr <= 4 and volatility <= 45 and drawdown >= -12 and turnover <= 10:
         return "medium"
     return "high"
 
@@ -76,9 +92,10 @@ def filter_risk(frame, group):
     return frame.loc[keep].copy()
 
 
-def diverse_rows(rows, limit, *, bank_budget=2, topic_limit=3, sector_limit=3):
+def diverse_rows(rows, limit, *, bank_budget=2, topic_limit=3, sector_limit=3, dividend_budget=None):
     selected, seen, sectors, topics = [], set(), {}, {}
     banks = 0
+    dividends = 0
     for row in rows:
         code = normalize_code(row.get("code"))
         industry = sector(row)
@@ -86,6 +103,8 @@ def diverse_rows(rows, limit, *, bank_budget=2, topic_limit=3, sector_limit=3):
         if not code or code in seen:
             continue
         if industry == "银行" and banks >= bank_budget:
+            continue
+        if dividend_budget is not None and dividends >= dividend_budget and is_dividend(row):
             continue
         if industry and sectors.get(industry, 0) >= sector_limit:
             continue
@@ -96,6 +115,7 @@ def diverse_rows(rows, limit, *, bank_budget=2, topic_limit=3, sector_limit=3):
         sectors[industry] = sectors.get(industry, 0) + 1
         topics[topic] = topics.get(topic, 0) + 1
         banks += industry == "银行"
+        dividends += is_dividend(row)
         if len(selected) >= limit:
             break
     return selected
@@ -106,6 +126,7 @@ def diverse_frame(frame, limit, policy, *, research=False):
     selected = diverse_rows(
         rows, limit, bank_budget=policy.get("bank_budget", 2),
         topic_limit=10 if research else 3, sector_limit=10 if research else 3,
+        dividend_budget=policy.get("dividend_budget"),
     )
     codes = {normalize_code(row["code"]) for row in selected}
     return frame.loc[frame["code"].map(normalize_code).isin(codes)].head(limit).copy()
