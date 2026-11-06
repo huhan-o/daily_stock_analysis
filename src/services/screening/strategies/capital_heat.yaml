@@ -24,21 +24,21 @@ screening:
     amount_min: 300000000
     turnover_rate_min: 2.0
     volume_ratio_min: 1.5
-    change_pct_min: 1.0
-    change_pct_max: 9.5
+    change_pct_min: -5.0
+    change_pct_max: 7.0
     price_min: 3
     price_max: 220
   tech_weight: 0.65
   factor_weights:
-    momentum: 0.32
-    activity: 0.28
-    liquidity: 0.16
-    theme_heat: 0.10
-    stability: 0.10
-    reversal: 0.04
+    momentum: 0.14
+    activity: 0.34
+    liquidity: 0.18
+    theme_heat: 0.16
+    stability: 0.12
+    reversal: 0.06
   scoring_profile:
-    momentum_chase_start_pct: 6.5
-    momentum_chase_penalty_slope: 12.0
+    momentum_chase_start_pct: 2.5
+    momentum_chase_penalty_slope: 22.0
     activity_ideal_volume_ratio: 2.8
     activity_high_volume_ratio: 7.0
     activity_ideal_turnover_rate: 6.0
@@ -67,7 +67,7 @@ screening:
     hot_money_penalty: 1.5
   ranking_hints: |
     优先关注：
-    1. 资金热度和价格表现同步，而不是单纯尾盘异动
-    2. 涨幅尚未透支，量比和换手率处在可持续区间
+    1. 资金流入和量能扩张领先于价格，而不是价格已经先走完
+    2. 个股当日涨幅尚未启动或仅温和启动，避免在板块内追最高的那一只
     3. 板块或主题有扩散迹象，避免孤立脉冲
   max_output: 5
