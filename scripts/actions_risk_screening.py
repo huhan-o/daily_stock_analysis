@@ -75,7 +75,8 @@ def build_recommendations(service, count, attach_plans, on_group=None):
                 data = service.screen(
                     strategy=strategy, market="cn", max_results=12, research_limit=12,
                     recommendation_policy={"group": group, "members": members,
-                                           "excluded_codes": sorted(used), "bank_budget": max(2 - banks, 0)},
+                                           "excluded_codes": sorted(used), "bank_budget": max(2 - banks, 0),
+                                           **({"dividend_budget": 2} if group == "low" else {})},
                 )
                 attach_plans(data)
         except Exception as exc:
@@ -96,7 +97,8 @@ def build_recommendations(service, count, attach_plans, on_group=None):
                     or any(value is None for value in levels) or not 0 < levels[0] < levels[1] < levels[2]):
                 continue
             eligible.append(item)
-        selected = diverse_rows(eligible, count, bank_budget=max(2 - banks, 0))
+        selected = diverse_rows(eligible, count, bank_budget=max(2 - banks, 0),
+                                dividend_budget=2 if group == "low" else None)
         for item in selected:
             used.add(item["code"])
             banks += sector(item) == "银行"
