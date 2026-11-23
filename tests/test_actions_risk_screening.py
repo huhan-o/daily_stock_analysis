@@ -350,3 +350,83 @@ def test_recommendation_post_rank_only_reuses_research_without_new_searches(monk
     assert metadata["cache_only"] is True
     assert metadata["enriched_count"] == metadata["requested_count"] == 1
     assert metadata["warnings"] == []
+
+
+def test_live_membership_paginates_exact_board_without_leader_fallback(monkeypatch):
+    from src.services.screening_service import DsaEastMoneyHotspotProvider
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    provider = DsaEastMoneyHotspotProvider()
+    monkeypatch.setattr(provider, "_source_call_budget", nullcontext)
+    calls = []
+    def get(url, **kwargs):
+        params = kwargs["params"]
+        scope, page = params["fs"], int(params["pn"])
+        calls.append((scope, page))
+        if scope.startswith("m:90"):
+            data = {"total": 1, "diff": [{"f12": "BK0001", "f14": "机器人"}]}
+        else:
+            assert scope == "b:BK0001 f:!50"
+            start, end = (0, 100) if page == 1 else (100, 135)
+            data = {"total": 135, "diff": [{"f12": str(600000+i), "f14": f"股票{i}"}
+                                              for i in range(start, end)]}
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"data": data})
+    monkeypatch.setattr(provider, "_eastmoney_get", get)
+    first = provider.recommendation_constituents("机器人")
+    second = provider.recommendation_constituents("机器人")
+    assert len(first["stocks"]) == len(second["stocks"]) == 135
+    assert first["canonical_topic"] == "机器人"
+    assert first["fallback_used"] is False
+    assert all(item["source"] == "eastmoney_live_constituents:BK0001" for item in first["stocks"])
+    assert sum(scope.startswith("m:90") for scope, _ in calls) == 1
+    with pytest.raises(ValueError, match="No exact"):
+        provider.recommendation_constituents("不存在的板块")
+
+
+def test_tushare_gate_is_shared_by_managers_and_smooth_not_bursty(monkeypatch):
+    from data_provider import tushare_fetcher as module
+
+    clock = [0.0]
+    waits = []
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    def sleep(seconds):
+        waits.append(seconds)
+        clock[0] += seconds
+    monkeypatch.setattr(module.time, "sleep", sleep)
+    monkeypatch.setattr(module, "_TUSHARE_NEXT_CALL_AT", 0.0)
+    first, second = module.TushareFetcher.__new__(module.TushareFetcher), module.TushareFetcher.__new__(module.TushareFetcher)
+    for fetcher in (first, second):
+        fetcher.rate_limit_per_minute = 40
+        fetcher._call_count = 0
+        fetcher._minute_start = None
+    first._check_rate_limit()
+    second._check_rate_limit()
+    first._check_rate_limit()
+    assert waits == [1.5, 1.5]
+    assert first._call_count == 2 and second._call_count == 1
+
+
+@pytest.mark.parametrize("new_api,method", [
+    ("stock_zh_a_hist_em", "_fetch_stock_data_em"),
+    ("stock_zh_a_hist_sina", "_fetch_stock_data_sina"),
+])
+def test_akshare_renamed_history_api_does_not_evaluate_missing_legacy(monkeypatch, new_api, method):
+    import sys
+    from types import SimpleNamespace
+    from data_provider import akshare_fetcher as module
+
+    calls = []
+    def history(**kwargs):
+        calls.append(kwargs)
+        return pd.DataFrame({"date": ["2026-11-20"], "open": [10], "high": [11],
+                             "low": [9], "close": [10], "volume": [1000], "amount": [10000]})
+    monkeypatch.setitem(sys.modules, "akshare", SimpleNamespace(**{new_api: history}))
+    monkeypatch.setattr(module, "_akshare_call_with_timeout", lambda fn, **kw: fn(**{
+        key: value for key, value in kw.items() if key not in {"timeout", "call_name"}}))
+    fetcher = module.AkshareFetcher(sleep_min=0, sleep_max=0)
+    monkeypatch.setattr(fetcher, "_set_random_user_agent", lambda: None)
+    result = getattr(fetcher, method)("600001", "2026-11-01", "2026-11-20")
+    assert len(result) == 1
+    assert calls[0]["start_date"] == "20261101" and calls[0]["end_date"] == "20261120"
+    assert calls[0]["adjust"] == "qfq"
