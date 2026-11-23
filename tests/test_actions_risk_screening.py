@@ -207,7 +207,7 @@ def test_service_passes_risk_policy_to_real_pipeline_bridge(monkeypatch):
                    recommendation_policy=policy)
     assert received[0]["context"]["recommendations"] == policy
     assert received[0]["config"].daily_enrich_enabled is True
-    assert received[0]["config"].daily_enrich_max_candidates == 48
+    assert received[0]["config"].daily_enrich_max_candidates == 240
 
 
 def test_default_actions_entry_builds_group_reports_and_checkpoints(monkeypatch, tmp_path):
@@ -228,3 +228,104 @@ def test_default_actions_entry_builds_group_reports_and_checkpoints(monkeypatch,
     assert status == batch.PARTIAL and "低风险股票（10/10只）" in content
     assert "目标购入价" in (tmp_path / "actions_screening_email.md").read_text()
     assert "高风险（0/10只）" in (tmp_path / "actions_screening.md").read_text()
+
+
+def test_research_pool_balances_themes_without_spending_final_quotas():
+    from src.services.screening.recommendations import diverse_frame
+
+    rows = [{"code": str(600000 + i), "name": f"银行{i}", "industry": "银行",
+             "recommendation_topic": "金融"} for i in range(20)]
+    rows += [{"code": "600100", "industry": "机械", "recommendation_topic": "机器人"},
+             {"code": "600101", "industry": "电子", "recommendation_topic": "芯片"}]
+    frame = pd.DataFrame(rows)
+    policy = {"bank_budget": 0, "dividend_budget": 0}
+    research = diverse_frame(frame, 12, policy, research=True)
+    assert len(research) == 12
+    assert {"600100", "600101"}.issubset(set(research.code))
+    assert sum(research.industry == "银行") == 10
+    # Final portfolio constraints remain strict.
+    assert len(diverse_frame(frame, 12, policy)) == 2
+
+
+def test_wider_hotspot_list_is_positive_fresh_unique_and_bounded():
+    service = Service()
+    requested, topics = [], []
+    def hotspots(**kwargs):
+        requested.append(kwargs)
+        return {"hotspots": [
+            {"topic": f"下跌{i}", "change_pct": -1} for i in range(12)
+        ] + [{"topic": "过期", "change_pct": 2, "stale": True}] + [
+            {"topic": f"主题{i//2}", "change_pct": 2} for i in range(50)
+        ]}
+    def detail(topic, **kwargs):
+        topics.append(topic)
+        return {"canonical_topic": topic, "stocks": [{"code": str(600000 + int(topic[2:]))}]}
+    service.hotspots, service.hotspot_detail = hotspots, detail
+    coverage = {}
+    members, errors = hotspot_members(service, coverage)
+    assert requested[0]["top"] == 50
+    assert len(topics) == len(set(topics)) == len(members) == 20
+    assert coverage == {"hotspot_boards": 20, "hotspot_members": 20}
+    assert not errors
+
+
+def test_final_plan_validation_can_backfill_beyond_original_twelve():
+    service = Service(fail_hotspots=True)
+    def screen(**kwargs):
+        service.calls.append(kwargs)
+        return {"ranking_mode": "llm", "candidates": [
+            {"code": str(600000+i), "name": f"股票{i}", "industry": f"行业{i//3}",
+             "raw": daily(), "llm_thesis": "规则研究"} for i in range(24)]}
+    service.screen = screen
+    def validate(data):
+        plans(data)
+        for item in data["candidates"][:12]:
+            item["technical_plan"]["stop_loss"] = 11
+    result = build_recommendations(service, 10, validate)
+    low = result["groups"][-1]
+    assert service.calls[0]["max_results"] == 30
+    assert service.calls[0]["research_limit"] == 12
+    assert service.calls[0]["recommendation_policy"]["defer_final_selection"] is True
+    assert len(low["candidates"]) == 10
+    assert all(int(item["code"]) >= 600012 for item in low["candidates"])
+    assert low["selection_diagnostics"]["invalid_plan_or_risk_data"] == 12
+    email, _ = render_recommendations(result, compact=True)
+    assert "引擎候选 24 → 价格/理由有效 12 → 最终 10" in email
+    assert "本组暂无满足全部条件的候选" in email
+    assert "模型分析未完成" not in email
+
+
+def test_real_pipeline_keeps_thirty_reserves_despite_twelve_model_cap(monkeypatch, tmp_path):
+    from src.services.screening import pipeline
+    from src.services.screening.config import Config
+
+    (tmp_path / "fixture.yaml").write_text(
+        "name: fixture\ndisplay_name: fixture\ndescription: fixture\nscreening:\n  enabled: true\n"
+        "  market_scope: [cn]\n  hard_filters:\n    exclude_st: true\n", encoding="utf-8")
+    snapshot = pd.DataFrame([
+        {"code": str(600000+i), "name": f"股票{i}", "price": 10, "change_pct": 2, "amount": 5e8,
+         "industry": "机械", "total_mv": 20e9, "pe_ratio": 20, "pb_ratio": 2,
+         "turnover_rate": 3, "volume_ratio": 2} for i in range(80)])
+    monkeypatch.setattr(pipeline, "fetch_snapshot_with_fallback", lambda *a, **kw: snapshot)
+    attempted = []
+    def enrich(frame, **kwargs):
+        attempted.append(len(frame))
+        result = frame.copy()
+        for key, value in daily(atr_20_pct=5).items():
+            result[key] = value
+        result.attrs["daily_success_count"] = len(result)
+        return result
+    monkeypatch.setattr(pipeline, "enrich_daily_features", enrich)
+    policy = {"group": "high", "defer_final_selection": True,
+              "members": {row["code"]: {"topic": "机器人"} for row in snapshot.to_dict("records")}}
+    config = Config(strategies_dir=tmp_path, daily_enrich_enabled=True,
+                    daily_enrich_max_candidates=240, llm_max_candidates=12,
+                    post_analyzers=[], risk_enabled=False, portfolio_diversity_enabled=False)
+    result = pipeline.screen("fixture", max_output=30, use_llm=False, config=config,
+                             context={"recommendations": policy})
+    assert attempted == [80]
+    assert len(result.picks) == 30
+    assert any("Recommendation risk band high: 80 -> 80" in note for note in result.degradation)
+    # The final report, not the research engine, enforces max three per theme.
+    rows = [{"code": pick.code, "recommendation_topic": "机器人"} for pick in result.picks]
+    assert len(diverse_rows(rows, 10)) == 3
