@@ -1133,7 +1133,7 @@ class ScreeningService:
                                        "board_code": code, "source": "eastmoney_live_board_snapshot"})
                 provider._recommendation_loaded_directories.add(kind)
             except Exception as exc:
-                errors.append(f"Live {kind} board directory failed: {type(exc).__name__}")
+                errors.append(f"Live {kind} board directory failed: {type(exc).__name__}: {str(exc)[:240]}")
         boards.sort(key=lambda item: item["change_pct"], reverse=True)
         return {"hotspots": boards[:max(1, min(int(top), 50))], "source_errors": errors,
                 "provider_used": "eastmoney_direct_board_snapshot", "cache_used": False,
@@ -1147,6 +1147,7 @@ class ScreeningService:
         refresh: bool = False,
         include_search: bool = False,
         top_stocks: int = 30,
+        board_code: str = "",
     ) -> Dict[str, Any]:
         _ensure_screening_enabled(self.config)
         _ensure_screening_available_for_use()
@@ -1166,7 +1167,7 @@ class ScreeningService:
             if not hasattr(self, "_recommendation_hotspot_provider"):
                 self._recommendation_hotspot_provider = provider_arg
             return self._recommendation_hotspot_provider.recommendation_constituents(
-                topic_text, top_stocks=top_stocks)
+                topic_text, top_stocks=top_stocks, board_code=board_code)
         cached = None if refresh or top_stocks != 30 else _load_screening_hotspot_detail_cache(provider=provider_name, topic=topic_text)
         if cached is not None:
             if not include_search:
@@ -2864,12 +2865,14 @@ class DsaEastMoneyHotspotProvider:
             if _env_text(row.get("项目"))
         }
 
-    def recommendation_constituents(self, topic: str, *, top_stocks: int = 500) -> Dict[str, Any]:
+    def recommendation_constituents(self, topic: str, *, top_stocks: int = 500, board_code: str = "") -> Dict[str, Any]:
         """Read exact live board members; never substitute leaders or peers."""
         with self._source_call_budget():
             if not hasattr(self, "_recommendation_board_codes"):
                 self._recommendation_board_codes = {}
-            board_code = self._recommendation_board_codes.get(topic)
+            if board_code and not re.fullmatch(r"BK\d+", board_code):
+                raise ValueError("Invalid exact board identity")
+            board_code = board_code or self._recommendation_board_codes.get(topic)
             if not board_code:
                 for kind, scope in (("concept", "m:90 t:3 f:!50"), ("industry", "m:90 t:2 f:!50")):
                     if kind not in getattr(self, "_recommendation_loaded_directories", set()):
@@ -2905,14 +2908,23 @@ class DsaEastMoneyHotspotProvider:
                     "stale": False, "fallback_used": False, "source_errors": []}
 
     def _recommendation_pages(self, scope: str, *, fields: str, max_pages: int) -> List[Dict[str, Any]]:
+        # Dedicated board hosts match current upstream AkShare endpoints.
+        if scope.startswith("b:"):
+            host = "29.push2.eastmoney.com"
+        elif "t:3" in scope:
+            host = "79.push2.eastmoney.com"
+        else:
+            host = "17.push2.eastmoney.com"
+        endpoint = f"https://{host}/api/qt/clist/get"
         rows, seen_codes = [], set()
         expected_total = None
         for page in range(1, max_pages + 1):
             params = dict(self._COMMON_PARAMS)
             params.update({"pn": str(page), "pz": "100", "fs": scope, "fields": fields})
             response = self._eastmoney_get(
-                self._BASE_URL, params=params, timeout=self._http_timeout(),
-                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+                endpoint, params=params, timeout=self._http_timeout(),
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json",
+                         "Referer": "https://quote.eastmoney.com/"})
             response.raise_for_status()
             data = response.json().get("data")
             if not isinstance(data, dict):
