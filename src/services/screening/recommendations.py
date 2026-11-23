@@ -123,10 +123,30 @@ def diverse_rows(rows, limit, *, bank_budget=2, topic_limit=3, sector_limit=3, d
 
 def diverse_frame(frame, limit, policy, *, research=False):
     rows = frame.to_dict("records")
-    selected = diverse_rows(
-        rows, limit, bank_budget=policy.get("bank_budget", 2),
-        topic_limit=10 if research else 3, sector_limit=10 if research else 3,
-        dividend_budget=policy.get("dividend_budget"),
-    )
+    if research:
+        # Research is not a portfolio: do not spend final bank/dividend quotas
+        # before daily risk and price validation. Round-robin known buckets so
+        # one theme cannot consume the entire bounded research budget.
+        buckets = {}
+        for row in rows:
+            bucket = safe_text(row.get("recommendation_topic")) or sector(row) or "unknown"
+            buckets.setdefault(bucket, []).append(row)
+        selected, seen = [], set()
+        while buckets and len(selected) < limit:
+            for bucket in list(buckets):
+                row = buckets[bucket].pop(0)
+                code = normalize_code(row.get("code"))
+                if code and code not in seen:
+                    selected.append(row)
+                    seen.add(code)
+                if not buckets[bucket]:
+                    del buckets[bucket]
+                if len(selected) >= limit:
+                    break
+    else:
+        selected = diverse_rows(
+            rows, limit, bank_budget=policy.get("bank_budget", 2),
+            dividend_budget=policy.get("dividend_budget"),
+        )
     codes = {normalize_code(row["code"]) for row in selected}
     return frame.loc[frame["code"].map(normalize_code).isin(codes)].head(limit).copy()
