@@ -2,6 +2,11 @@ name: Screening Regression
 
 on:
   workflow_dispatch:
+    inputs:
+      live_probe:
+        description: 'Probe public board HTTP responses (no secrets, no reports)'
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -41,6 +46,20 @@ jobs:
             .github/requirements-ci.txt
       - name: Install test dependencies
         run: python -m pip install -r .github/requirements-ci.txt
+      - name: Diagnose public board endpoints without credentials
+        if: github.event_name == 'workflow_dispatch' && inputs.live_probe
+        run: |
+          python -u - <<'PY'
+          import requests, time, json
+          params = {"pn":"1", "pz":"100", "po":"1", "np":"1", "ut":"bd1d9ddb04089700cf9c27f6f7426281", "fltt":"2", "invt":"2", "fid":"f12", "fs":"m:90 t:3 f:!50", "fields":"f12,f14,f3"}
+          for host in ("push2.eastmoney.com", "79.push2.eastmoney.com", "17.push2.eastmoney.com", "29.push2.eastmoney.com"):
+              started = time.monotonic()
+              try:
+                  r = requests.get(f"https://{host}/api/qt/clist/get", params=params, headers={"User-Agent":"Mozilla/5.0", "Referer":"https://quote.eastmoney.com/"}, timeout=(3,5))
+                  print(json.dumps({"host":host,"status":r.status_code,"elapsed":round(time.monotonic()-started,2),"content_type":r.headers.get("Content-Type"),"body_sample":r.text[:220]},ensure_ascii=False), flush=True)
+              except Exception as exc:
+                  print(json.dumps({"host":host,"error":str(exc),"elapsed":round(time.monotonic()-started,2)},ensure_ascii=False),flush=True)
+          PY
       - name: Syntax and critical lint
         run: |
           python -m compileall -q scripts/actions_risk_screening.py scripts/actions_report.py src/services/screening src/services/screening_service.py
