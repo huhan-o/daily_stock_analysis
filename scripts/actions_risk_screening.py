@@ -4,16 +4,23 @@ from src.services.screening.normalize import normalize_code, safe_text
 from src.services.screening.recommendations import GROUPS, diverse_rows, finite, sector
 
 
-def hotspot_members(service):
-    payload = service.hotspots(top=12, refresh=True, include_details=False)
+def hotspot_members(service, diagnostics=None):
+    # The first 12 ranked boards may include losers and overlapping themes.
+    # Inspect a wider fresh list, but bound expensive constituent lookups.
+    payload = service.hotspots(top=50, refresh=True, include_details=False)
     members, errors = {}, list(payload.get("source_errors") or [])
     if payload.get("stale") or payload.get("cache_used"):
         return {}, [*errors, "热点快照过期或使用缓存，未用于热点推荐。"]
+    inspected = set()
     for row in payload.get("hotspots") or []:
         topic = safe_text(row.get("canonical_topic") or row.get("topic") or row.get("name"))
         change = finite(row.get("change_pct"))
-        if not topic or change is None or change <= 0:
+        if (not topic or topic in inspected or change is None or change <= 0
+                or row.get("stale") or row.get("fallback_used")):
             continue
+        if len(inspected) >= 20:
+            break
+        inspected.add(topic)
         try:
             # 热度排名前 30 的成分股几乎都是当日大涨股，会被高/中风险组的涨幅上限全部过滤掉，
             # 因此这里取板块全部成分股，交给各组自己的风险规则筛选。
@@ -39,6 +46,8 @@ def hotspot_members(service):
                 "industry_change_pct": change,
                 "source": stock.get("source") or detail.get("provider") or payload.get("provider_used"),
             })
+    if diagnostics is not None:
+        diagnostics.update(hotspot_boards=len(inspected), hotspot_members=len(members))
     if not members:
         errors.append("未取得可核验的上涨热点及其成分股，高、中风险组不以非热点股票补数。")
     return members, errors
@@ -63,7 +72,7 @@ def build_recommendations(service, count, attach_plans, on_group=None):
     if on_group is not None:
         on_group(result)
     try:
-        members, errors = hotspot_members(service)
+        members, errors = hotspot_members(service, result.setdefault("coverage", {}))
     except Exception as exc:
         members, errors = {}, [f"热点读取失败：{type(exc).__name__}，仍尝试低风险组。"]
     result["warnings"] = errors
@@ -73,8 +82,8 @@ def build_recommendations(service, count, attach_plans, on_group=None):
         try:
             if group == "low" or members:
                 data = service.screen(
-                    strategy=strategy, market="cn", max_results=12, research_limit=12,
-                    recommendation_policy={"group": group, "members": members,
+                    strategy=strategy, market="cn", max_results=max(30, count * 3), research_limit=12,
+                    recommendation_policy={"group": group, "members": members, "defer_final_selection": True,
                                            "excluded_codes": sorted(used), "bank_budget": max(2 - banks, 0),
                                            **({"dividend_budget": 2} if group == "low" else {})},
                 )
@@ -82,9 +91,12 @@ def build_recommendations(service, count, attach_plans, on_group=None):
         except Exception as exc:
             data.setdefault("warnings", []).append(f"{title}筛选失败：{type(exc).__name__}")
         eligible = []
+        rejected = {"universe_or_duplicate": 0, "invalid_plan_or_risk_data": 0}
+        returned_count = len(data.get("candidates") or [])
         for item in data.get("candidates") or []:
             code = normalize_code(item.get("code"))
-            if code in used or (group != "low" and code not in members):
+            if not code or code in used or (group != "low" and code not in members):
+                rejected["universe_or_duplicate"] += 1
                 continue
             item["code"] = code
             item["recommendation_topic"] = (members.get(code) or {}).get("topic", "")
@@ -95,6 +107,7 @@ def build_recommendations(service, count, attach_plans, on_group=None):
             levels = [finite(plan.get(key)) for key in ("stop_loss", "entry", "take_profit")]
             if (not item["recommendation_reason"] or plan.get("status") != "条件式技术测算"
                     or any(value is None for value in levels) or not 0 < levels[0] < levels[1] < levels[2]):
+                rejected["invalid_plan_or_risk_data"] += 1
                 continue
             eligible.append(item)
         selected = diverse_rows(eligible, count, bank_budget=max(2 - banks, 0),
@@ -102,6 +115,10 @@ def build_recommendations(service, count, attach_plans, on_group=None):
         for item in selected:
             used.add(item["code"])
             banks += sector(item) == "银行"
+        data["selection_diagnostics"] = {
+            "returned": returned_count, "valid_plans": len(eligible), "selected": len(selected),
+            "not_selected_after_caps_or_target": len(eligible) - len(selected), **rejected,
+        }
         data.update(group=group, title=title, requested=count, candidates=selected)
         result["groups"].append(data)
         result["candidates"].extend(selected)
