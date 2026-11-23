@@ -645,7 +645,10 @@ class AkshareFetcher(BaseFetcher):
             import time as _time
             api_start = _time.time()
 
-            df = ak.stock_zh_a_hist(
+            history_api = getattr(ak, "stock_zh_a_hist_em", None)
+            if history_api is None:
+                history_api = ak.stock_zh_a_hist
+            df = history_api(
                 symbol=stock_code,
                 period="daily",
                 start_date=start_date.replace('-', ''),
@@ -681,14 +684,19 @@ class AkshareFetcher(BaseFetcher):
         self._enforce_rate_limit()
 
         try:
+            history_api = getattr(ak, "stock_zh_a_hist_sina", None)
+            api_name = "stock_zh_a_hist_sina"
+            if history_api is None:
+                history_api = ak.stock_zh_a_daily
+                api_name = "stock_zh_a_daily"
             df = _akshare_call_with_timeout(
-                ak.stock_zh_a_daily,
+                history_api,
                 symbol=symbol,
                 start_date=start_date.replace('-', ''),
                 end_date=end_date.replace('-', ''),
                 adjust="qfq",
                 timeout=self._history_call_timeout,
-                call_name="ak.stock_zh_a_daily",
+                call_name=f"ak.{api_name}",
             )
 
             # 标准化新浪数据列名
