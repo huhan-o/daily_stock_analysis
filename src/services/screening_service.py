@@ -1109,6 +1109,36 @@ class ScreeningService:
             attached["source_errors"] = source_errors
         return attached
 
+    def recommendation_hotspots(self, *, top: int = 50, **kwargs: Any) -> Dict[str, Any]:
+        """Lightweight selection-only board snapshot, without leader scoring."""
+        _ensure_screening_enabled(self.config)
+        provider = DsaEastMoneyHotspotProvider()
+        self._recommendation_hotspot_provider = provider
+        boards = []
+        errors = []
+        provider._recommendation_board_codes = {}
+        provider._recommendation_loaded_directories = set()
+        for kind, scope in (("concept", "m:90 t:3 f:!50"), ("industry", "m:90 t:2 f:!50")):
+            try:
+                with provider._source_call_budget():
+                    rows = provider._recommendation_pages(scope, fields="f12,f14,f3", max_pages=30)
+                for row in rows:
+                    name, code = _env_text(row.get("f14")), _env_text(row.get("f12"))
+                    change = _safe_float(row.get("f3"))
+                    if not name or not re.fullmatch(r"BK\d+", code):
+                        continue
+                    provider._recommendation_board_codes[name] = code
+                    if change is not None and change > 0 and not provider._is_broad_board(name):
+                        boards.append({"topic": name, "canonical_topic": name, "change_pct": change,
+                                       "board_code": code, "source": "eastmoney_live_board_snapshot"})
+                provider._recommendation_loaded_directories.add(kind)
+            except Exception as exc:
+                errors.append(f"Live {kind} board directory failed: {type(exc).__name__}")
+        boards.sort(key=lambda item: item["change_pct"], reverse=True)
+        return {"hotspots": boards[:max(1, min(int(top), 50))], "source_errors": errors,
+                "provider_used": "eastmoney_direct_board_snapshot", "cache_used": False,
+                "stale": False, "fallback_used": False}
+
     def hotspot_detail(
         self,
         *,
