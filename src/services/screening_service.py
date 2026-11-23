@@ -1283,6 +1283,7 @@ class ScreeningService:
         selected, dsa_enrichment = _enrich_candidates_with_dsa(
             selected, candidate_context_cache=candidate_context_cache,
             **({"max_candidates": research_limit} if research_limit is not None else {}),
+            **({"cache_only": True} if recommendation_policy is not None else {}),
         )
         selected = [
             _attach_candidate_explanations(
@@ -1798,6 +1799,9 @@ def _call_screening_screen(
         # A 48-row pre-risk pool starved the strict low-volatility group.
         # Keep requests bounded; this does not expand paid news research.
         pipeline_config.daily_enrich_max_candidates = 240
+        # Bound concurrency as well as total work; serial cold-cache research
+        # would multiply the previous 48-row latency by five.
+        pipeline_config.daily_fetch_max_workers = 3
 
     daily_history_fetcher = _build_screening_dsa_daily_history_fetcher()
     with _screening_litellm_headers(config):
@@ -3547,13 +3551,15 @@ def _enrich_candidates_with_dsa(
     *,
     candidate_context_cache: Optional[Dict[str, Dict[str, Any]]] = None,
     max_candidates: int = DSA_ENRICHMENT_MAX_CANDIDATES,
+    cache_only: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     enriched_count = 0
     warnings: List[str] = []
-    limit = min(len(candidates), max_candidates)
+    limit = (sum(_env_text(item.get("code")) in (candidate_context_cache or {}) for item in candidates)
+             if cache_only else min(len(candidates), max_candidates))
 
     for index, candidate in enumerate(candidates):
-        if index >= limit:
+        if not cache_only and index >= limit:
             continue
         cached = (candidate_context_cache or {}).get(_env_text(candidate.get("code")))
         cached_context = cached.get("dsa_context") if isinstance(cached, dict) else None
@@ -3578,6 +3584,11 @@ def _enrich_candidates_with_dsa(
                 warnings.extend(str(item) for item in existing_warnings if item)
             elif existing_warnings:
                 warnings.append(str(existing_warnings))
+            continue
+        if cache_only:
+            # Recommendation ranking already spent its bounded research
+            # budget. Reordering must not trigger a second batch of searches,
+            # including retries of failed pre-rank attempts.
             continue
         try:
             enriched = _build_dsa_candidate_context(
@@ -3604,6 +3615,7 @@ def _enrich_candidates_with_dsa(
         "enabled": True,
         "max_candidates": max_candidates,
         "requested_count": limit,
+        "cache_only": cache_only,
         "enriched_count": enriched_count,
         "warnings": _dedupe_strings(warnings),
     }
