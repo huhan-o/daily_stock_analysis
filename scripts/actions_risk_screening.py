@@ -25,7 +25,10 @@ def hotspot_members(service, diagnostics=None):
         try:
             # 热度排名前 30 的成分股几乎都是当日大涨股，会被高/中风险组的涨幅上限全部过滤掉，
             # 因此这里取板块全部成分股，交给各组自己的风险规则筛选。
-            detail = service.hotspot_detail(topic=topic, refresh=True, include_search=False, top_stocks=500)
+            detail = service.hotspot_detail(
+                topic=topic, refresh=True, include_search=False, top_stocks=500,
+                **({"board_code": safe_text(row["board_code"])} if row.get("board_code") else {}),
+            )
         except Exception as exc:
             errors.append(f"热点成分股读取失败：{topic}（{type(exc).__name__}）")
             continue
