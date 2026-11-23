@@ -430,3 +430,43 @@ def test_akshare_renamed_history_api_does_not_evaluate_missing_legacy(monkeypatc
     assert len(result) == 1
     assert calls[0]["start_date"] == "20261101" and calls[0]["end_date"] == "20261120"
     assert calls[0]["adjust"] == "qfq"
+
+
+@pytest.mark.parametrize("second", [[], [{"f12": "600001", "f14": "重复"}]])
+def test_live_membership_rejects_incomplete_or_repeated_pages(monkeypatch, second):
+    from types import SimpleNamespace
+    from src.services.screening_service import DsaEastMoneyHotspotProvider
+
+    provider = DsaEastMoneyHotspotProvider()
+    def get(url, **kwargs):
+        items = [{"f12": "600001", "f14": "第一只"}] if kwargs["params"]["pn"] == "1" else second
+        return SimpleNamespace(raise_for_status=lambda: None,
+                               json=lambda: {"data": {"total": 2, "diff": items}})
+    monkeypatch.setattr(provider, "_eastmoney_get", get)
+    with pytest.raises(ValueError, match="Incomplete"):
+        provider._recommendation_pages("b:BK0001 f:!50", fields="f12,f14", max_pages=5)
+
+
+def test_recommendation_discovery_bypasses_heavy_hotspot_pipeline(monkeypatch):
+    from src.config import Config
+    from src.services import screening_service as module
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("heavy leader discovery must not run")
+    monkeypatch.setattr(module.screening_hotspot, "discover_hotspots", forbidden)
+    calls = []
+    def pages(self, scope, **kwargs):
+        calls.append(scope)
+        return [{"f12": "BK0001" if "t:3" in scope else "BK0002",
+                 "f14": "机器人" if "t:3" in scope else "机械", "f3": 2}]
+    monkeypatch.setattr(module.DsaEastMoneyHotspotProvider, "_recommendation_pages", pages)
+    service = module.ScreeningService(Config(screening_enabled=True))
+    result = service.recommendation_hotspots(top=50)
+    assert {item["topic"] for item in result["hotspots"]} == {"机器人", "机械"}
+    assert len(calls) == 2
+    assert service._recommendation_hotspot_provider._recommendation_board_codes["机器人"] == "BK0001"
+    def detail(self, topic, **kwargs):
+        assert self is service._recommendation_hotspot_provider
+        return {"canonical_topic": topic, "stocks": [{"code": "600001"}]}
+    monkeypatch.setattr(module.DsaEastMoneyHotspotProvider, "recommendation_constituents", detail)
+    assert service.hotspot_detail(topic="机器人", top_stocks=500)["stocks"] == [{"code": "600001"}]
