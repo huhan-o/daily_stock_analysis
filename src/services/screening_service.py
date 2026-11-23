@@ -2905,7 +2905,8 @@ class DsaEastMoneyHotspotProvider:
                     "stale": False, "fallback_used": False, "source_errors": []}
 
     def _recommendation_pages(self, scope: str, *, fields: str, max_pages: int) -> List[Dict[str, Any]]:
-        rows = []
+        rows, seen_codes = [], set()
+        expected_total = None
         for page in range(1, max_pages + 1):
             params = dict(self._COMMON_PARAMS)
             params.update({"pn": str(page), "pz": "100", "fs": scope, "fields": fields})
@@ -2921,12 +2922,24 @@ class DsaEastMoneyHotspotProvider:
                 items = list(items.values())
             if not isinstance(items, list):
                 raise ValueError("Invalid live board member list")
-            rows.extend(item for item in items if isinstance(item, dict))
             total = _safe_float(data.get("total"))
-            if total is not None and len(rows) >= total:
+            if total is None or not math.isfinite(total) or total < 0 or not total.is_integer():
+                raise ValueError("Missing or invalid live board total")
+            if expected_total is not None and total != expected_total:
+                raise ValueError("Live board total changed during pagination")
+            expected_total = total
+            before = len(rows)
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                code = _env_text(item.get("f12"))
+                if code and code not in seen_codes:
+                    seen_codes.add(code)
+                    rows.append(item)
+            if len(rows) >= total:
                 return rows
-            if not items or (total is None and len(items) < 100):
-                return rows
+            if len(rows) == before:
+                raise ValueError("Incomplete live board pagination: empty or repeated page")
         raise ValueError("Live board pagination exceeded bounded page budget")
 
     def _fetch_eastmoney_constituents(self, topic: str, *, source: str) -> Any:
