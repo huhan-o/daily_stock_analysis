@@ -1129,6 +1129,14 @@ class ScreeningService:
         provider_name, provider_arg = _resolve_hotspot_provider(provider)
         if not isinstance(provider_arg, DsaEastMoneyHotspotProvider):
             provider_arg = DsaEastMoneyHotspotProvider()
+        if top_stocks != 30:
+            # The recommendation path needs membership, not route/news or a
+            # leader-only fallback. Reuse the exact board directory for this
+            # service instance, and fail closed if live constituents fail.
+            if not hasattr(self, "_recommendation_hotspot_provider"):
+                self._recommendation_hotspot_provider = provider_arg
+            return self._recommendation_hotspot_provider.recommendation_constituents(
+                topic_text, top_stocks=top_stocks)
         cached = None if refresh or top_stocks != 30 else _load_screening_hotspot_detail_cache(provider=provider_name, topic=topic_text)
         if cached is not None:
             if not include_search:
@@ -2825,6 +2833,71 @@ class DsaEastMoneyHotspotProvider:
             for _, row in df.iterrows()
             if _env_text(row.get("项目"))
         }
+
+    def recommendation_constituents(self, topic: str, *, top_stocks: int = 500) -> Dict[str, Any]:
+        """Read exact live board members; never substitute leaders or peers."""
+        with self._source_call_budget():
+            if not hasattr(self, "_recommendation_board_codes"):
+                self._recommendation_board_codes = {}
+            board_code = self._recommendation_board_codes.get(topic)
+            if not board_code:
+                for kind, scope in (("concept", "m:90 t:3 f:!50"), ("industry", "m:90 t:2 f:!50")):
+                    if kind not in getattr(self, "_recommendation_loaded_directories", set()):
+                        rows = self._recommendation_pages(scope, fields="f12,f14", max_pages=30)
+                        for row in rows:
+                            name, code = _env_text(row.get("f14")), _env_text(row.get("f12"))
+                            if name and re.fullmatch(r"BK\d+", code):
+                                self._recommendation_board_codes[name] = code
+                        loaded = getattr(self, "_recommendation_loaded_directories", set())
+                        loaded.add(kind)
+                        self._recommendation_loaded_directories = loaded
+                    board_code = self._recommendation_board_codes.get(topic)
+                    if board_code:
+                        break
+            if not board_code:
+                raise ValueError(f"No exact EastMoney board code for {topic}; no leader fallback")
+            rows = self._recommendation_pages(
+                f"b:{board_code} f:!50", fields="f12,f14", max_pages=50)
+            stocks, seen = [], set()
+            for row in rows:
+                code = _env_text(row.get("f12"))
+                if not re.fullmatch(r"\d{6}", code) or code in seen:
+                    continue
+                seen.add(code)
+                stocks.append({"code": code, "name": _env_text(row.get("f14")),
+                               "source": f"eastmoney_live_constituents:{board_code}",
+                               "stale": False, "fallback_used": False})
+            if not stocks:
+                raise ValueError(f"Live board {topic} returned no valid constituents")
+            return {"topic": topic, "canonical_topic": topic, "board_code": board_code,
+                    "stocks": stocks[:max(1, int(top_stocks))], "stock_count": len(stocks),
+                    "provider": "eastmoney_direct_membership", "quality_status": "live",
+                    "stale": False, "fallback_used": False, "source_errors": []}
+
+    def _recommendation_pages(self, scope: str, *, fields: str, max_pages: int) -> List[Dict[str, Any]]:
+        rows = []
+        for page in range(1, max_pages + 1):
+            params = dict(self._COMMON_PARAMS)
+            params.update({"pn": str(page), "pz": "100", "fs": scope, "fields": fields})
+            response = self._eastmoney_get(
+                self._BASE_URL, params=params, timeout=self._http_timeout(),
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+            response.raise_for_status()
+            data = response.json().get("data")
+            if not isinstance(data, dict):
+                raise ValueError("Invalid live board response")
+            items = data.get("diff") or []
+            if isinstance(items, dict):
+                items = list(items.values())
+            if not isinstance(items, list):
+                raise ValueError("Invalid live board member list")
+            rows.extend(item for item in items if isinstance(item, dict))
+            total = _safe_float(data.get("total"))
+            if total is not None and len(rows) >= total:
+                return rows
+            if not items or (total is None and len(items) < 100):
+                return rows
+        raise ValueError("Live board pagination exceeded bounded page budget")
 
     def _fetch_eastmoney_constituents(self, topic: str, *, source: str) -> Any:
         import akshare as ak
