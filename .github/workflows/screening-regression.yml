@@ -1,0 +1,56 @@
+name: Screening Regression
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/actions_risk_screening.py'
+      - 'scripts/actions_report.py'
+      - 'src/services/screening/recommendations.py'
+      - 'src/services/screening/pipeline.py'
+      - 'src/services/screening_service.py'
+      - 'tests/test_actions_risk_screening.py'
+      - '.github/workflows/screening-regression.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screening-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            .github/requirements-ci.txt
+      - name: Install test dependencies
+        run: python -m pip install -r .github/requirements-ci.txt
+      - name: Syntax and critical lint
+        run: |
+          python -m compileall -q scripts/actions_risk_screening.py scripts/actions_report.py src/services/screening src/services/screening_service.py
+          python -m flake8 --select=E9,F63,F7,F82 scripts/actions_risk_screening.py scripts/actions_report.py src/services/screening/recommendations.py src/services/screening/pipeline.py src/services/screening_service.py
+      - name: Offline screening and email regressions (no secrets or notifications)
+        run: >-
+          python -m pytest -q --timeout=60
+          tests/test_actions_risk_screening.py
+          tests/test_actions_report.py
+          tests/test_actions_screening_report.py
+          --junitxml=screening-regression.xml
+      - name: Save test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screening-regression-results
+          path: screening-regression.xml
+          if-no-files-found: warn
+          retention-days: 14
