@@ -150,6 +150,10 @@ def render_recommendations(data: dict, *, compact: bool = False) -> tuple[str, i
     lines = ["# 分风险选股报告", "", f"目标 {data['requested']} 只，实际 {len(data['candidates'])} 只；各组独立筛选、股票不重复。",
              "", "高、中风险组取自本次上涨热点的成分股；全报告银行最多2只，每组同一已知行业或热点最多3只。",
              "风险为波动分档：高风险波动较大；中风险控制波动与回撤；低风险须通过低波动、估值和日线质量筛选，不代表保本。"]
+    coverage = data.get("coverage") or {}
+    if coverage:
+        lines.extend(["", f"热点覆盖：本次检查 {coverage.get('hotspot_boards', 0)} 个上涨板块，"
+                      f"取得 {coverage.get('hotspot_members', 0)} 只去重成分股；未采用下跌板块或过期成分补数。"])
     partial = bool(data.get("warnings")) or len(data.get("groups") or []) != 3
     for group in data.get("groups") or []:
         candidates = group["candidates"]
@@ -157,7 +161,21 @@ def render_recommendations(data: dict, *, compact: bool = False) -> tuple[str, i
         lines.extend(["", f"## {group['title']}（{len(candidates)}/{group['requested']}只）", ""])
         if len(candidates) < group["requested"]:
             lines.append("数量不足：热点、风险、有效价格或分散条件不满足，未用其他风险档或重复股票补数。")
+        selection = group.get("selection_diagnostics") or {}
+        if selection:
+            lines.extend(["", f"筛选漏斗：引擎候选 {selection.get('returned', 0)} → "
+                          f"价格/理由有效 {selection.get('valid_plans', 0)} → 最终 {len(candidates)}；"
+                          f"无效价格或风险资料 {selection.get('invalid_plan_or_risk_data', 0)}，"
+                          f"非本组或重复 {selection.get('universe_or_duplicate', 0)}，"
+                          f"受分散约束或目标名额限制未选 {selection.get('not_selected_after_caps_or_target', 0)}。"])
         if compact:
+            notes = list(dict.fromkeys(str(value) for key in ("warnings", "degradation", "source_errors")
+                                       for value in group.get(key) or []))
+            if notes:
+                lines.extend(["", "数据与筛选诊断：" + cell("；".join(notes[:8]))])
+            for key, label in (("llm_market_view", "市场判断（模型）"), ("llm_portfolio_risk", "本组风险")):
+                if group.get(key):
+                    lines.extend(["", f"{label}：{cell(group[key])}"])
             lines.extend(["", "| 股票 | 热点/行业 | 推荐理由 | 目标购入价 | 止损价 | 止盈价 |",
                           "| --- | --- | --- | --- | --- | --- |"])
             for item in candidates:
@@ -168,7 +186,9 @@ def render_recommendations(data: dict, *, compact: bool = False) -> tuple[str, i
             dates = sorted({item["technical_plan"]["as_of"] for item in candidates})
             if dates:
                 lines.append("\n价格依据：" + cell("、".join(dates)) + "完整日线，单位元。")
-            if group.get("llm_failure_reason") or group.get("ranking_mode") != "llm":
+            if not candidates:
+                lines.append("\n本组暂无满足全部条件的候选；请结合上方数据与筛选诊断判断，不将空组误认为模型故障。")
+            elif group.get("llm_failure_reason") or group.get("ranking_mode") != "llm":
                 lines.append("\n模型分析未完成，本组采用量价规则筛选；详细诊断见完整报告。")
         else:
             for index, item in enumerate(candidates, 1):
