@@ -11,6 +11,12 @@ on:
       - 'src/services/screening/pipeline.py'
       - 'src/services/screening_service.py'
       - 'tests/test_actions_risk_screening.py'
+      - 'tests/test_actions_report.py'
+      - 'tests/test_actions_screening_report.py'
+      - 'tests/test_akshare_history_timeout.py'
+      - 'tests/test_tushare_fetcher*.py'
+      - 'data_provider/tushare_fetcher.py'
+      - 'data_provider/akshare_fetcher.py'
       - '.github/workflows/screening-regression.yml'
 
 permissions:
@@ -45,6 +51,10 @@ jobs:
           tests/test_actions_risk_screening.py
           tests/test_actions_report.py
           tests/test_actions_screening_report.py
+          tests/test_akshare_history_timeout.py
+          tests/test_tushare_fetcher_followups.py
+          tests/test_tushare_fetcher_get_stock_list.py
+          tests/test_tushare_fetcher_http_client.py
           --junitxml=screening-regression.xml
       - name: Save test results
         if: always()
