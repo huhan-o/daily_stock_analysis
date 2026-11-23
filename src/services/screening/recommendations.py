@@ -148,5 +148,11 @@ def diverse_frame(frame, limit, policy, *, research=False):
             rows, limit, bank_budget=policy.get("bank_budget", 2),
             dividend_budget=policy.get("dividend_budget"),
         )
-    codes = {normalize_code(row["code"]) for row in selected}
+    codes = [normalize_code(row["code"]) for row in selected]
+    if research:
+        # Preserve round-robin order for the smaller paid-news prefix too.
+        ordered = frame.copy()
+        ordered.index = ordered["code"].map(normalize_code)
+        ordered = ordered.loc[~ordered.index.duplicated(keep="first")]
+        return ordered.loc[codes].reset_index(drop=True).copy()
     return frame.loc[frame["code"].map(normalize_code).isin(codes)].head(limit).copy()
