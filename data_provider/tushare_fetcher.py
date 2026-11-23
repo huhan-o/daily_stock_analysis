@@ -10,7 +10,7 @@ TushareFetcher - 备用数据源 1 (Priority 2)
 
 流控策略：
 1. 实现"每分钟调用计数器"
-2. 超过免费配额（80次/分）时，强制休眠到下一分钟
+2. 按默认40次/分平滑节流，跨线程和管理器共享额度
 3. 使用 tenacity 实现指数退避重试
 """
 
@@ -18,6 +18,7 @@ import json as _json
 import logging
 import re
 import time
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, List, Dict, Any
 
@@ -38,6 +39,11 @@ import os
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+# All managers in this process share one smooth request gate. A per-instance
+# burst counter raced across screening workers and exceeded 50/min accounts.
+_TUSHARE_RATE_LOCK = threading.Lock()
+_TUSHARE_NEXT_CALL_AT = 0.0
 
 
 # ETF code prefixes by exchange
@@ -145,21 +151,21 @@ class TushareFetcher(BaseFetcher):
     - 失败后指数退避重试
     
     配额说明（Tushare 免费用户）：
-    - 每分钟最多 80 次请求
+    - 每分钟默认 40 次请求（为50次配额留余量）
     - 每天最多 500 次请求
     """
     
     name = "TushareFetcher"
     priority = int(os.getenv("TUSHARE_PRIORITY", "2"))  # 默认优先级，会在 __init__ 中根据配置动态调整
 
-    def __init__(self, rate_limit_per_minute: int = 80):
+    def __init__(self, rate_limit_per_minute: int = 40):
         """
         初始化 TushareFetcher
 
         Args:
-            rate_limit_per_minute: 每分钟最大请求数（默认80，Tushare免费配额）
+            rate_limit_per_minute: 每分钟最大请求数（默认40，低于常见50次/分钟配额）
         """
-        self.rate_limit_per_minute = rate_limit_per_minute
+        self.rate_limit_per_minute = max(1, int(rate_limit_per_minute))
         self._call_count = 0  # 当前分钟内的调用次数
         self._minute_start: Optional[float] = None  # 当前计数周期开始时间
         self._api: Optional[object] = None  # Tushare API 实例
@@ -244,46 +250,17 @@ class TushareFetcher(BaseFetcher):
         return self._api is not None
 
     def _check_rate_limit(self) -> None:
-        """
-        检查并执行速率限制
-        
-        流控策略：
-        1. 检查是否进入新的一分钟
-        2. 如果是，重置计数器
-        3. 如果当前分钟调用次数超过限制，强制休眠
-        """
-        current_time = time.time()
-        
-        # 检查是否需要重置计数器（新的一分钟）
-        if self._minute_start is None:
-            self._minute_start = current_time
-            self._call_count = 0
-        elif current_time - self._minute_start >= 60:
-            # 已经过了一分钟，重置计数器
-            self._minute_start = current_time
-            self._call_count = 0
-            logger.debug("速率限制计数器已重置")
-        
-        # 检查是否超过配额
-        if self._call_count >= self.rate_limit_per_minute:
-            # 计算需要等待的时间（到下一分钟）
-            elapsed = current_time - self._minute_start
-            sleep_time = max(0, 60 - elapsed) + 1  # +1 秒缓冲
-            
-            logger.warning(
-                f"Tushare 达到速率限制 ({self._call_count}/{self.rate_limit_per_minute} 次/分钟)，"
-                f"等待 {sleep_time:.1f} 秒..."
-            )
-            
-            time.sleep(sleep_time)
-            
-            # 重置计数器
+        """Pace requests across threads and manager instances, without bursts."""
+        global _TUSHARE_NEXT_CALL_AT
+        interval = 60.0 / self.rate_limit_per_minute
+        with _TUSHARE_RATE_LOCK:
+            delay = max(0.0, _TUSHARE_NEXT_CALL_AT - time.monotonic())
+            if delay:
+                time.sleep(delay)
+            now = time.monotonic()
+            _TUSHARE_NEXT_CALL_AT = now + interval
+            self._call_count += 1
             self._minute_start = time.time()
-            self._call_count = 0
-        
-        # 增加调用计数
-        self._call_count += 1
-        logger.debug(f"Tushare 当前分钟调用次数: {self._call_count}/{self.rate_limit_per_minute}")
 
     def _call_api_with_rate_limit(self, method_name: str, **kwargs) -> pd.DataFrame:
         """统一通过速率限制包装 Tushare API 调用。"""
@@ -539,7 +516,7 @@ class TushareFetcher(BaseFetcher):
             error_msg = str(e).lower()
             
             # 检测配额超限
-            if any(keyword in error_msg for keyword in ['quota', '配额', 'limit', '权限']):
+            if any(keyword in error_msg for keyword in ['quota', '配额', 'limit', '权限', '频率超限', '频次']):
                 logger.warning(f"Tushare 配额可能超限: {e}")
                 raise RateLimitError(f"Tushare 配额超限: {e}") from e
             
