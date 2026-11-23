@@ -470,3 +470,39 @@ def test_recommendation_discovery_bypasses_heavy_hotspot_pipeline(monkeypatch):
         return {"canonical_topic": topic, "stocks": [{"code": "600001"}]}
     monkeypatch.setattr(module.DsaEastMoneyHotspotProvider, "recommendation_constituents", detail)
     assert service.hotspot_detail(topic="机器人", top_stocks=500)["stocks"] == [{"code": "600001"}]
+
+
+@pytest.mark.parametrize("scope,host", [
+    ("m:90 t:3 f:!50", "79.push2.eastmoney.com"),
+    ("m:90 t:2 f:!50", "17.push2.eastmoney.com"),
+    ("b:BK0001 f:!50", "29.push2.eastmoney.com"),
+])
+def test_board_request_uses_documented_dedicated_host(monkeypatch, scope, host):
+    from types import SimpleNamespace
+    from src.services.screening_service import DsaEastMoneyHotspotProvider
+
+    provider = DsaEastMoneyHotspotProvider()
+    def get(url, **kwargs):
+        assert url == f"https://{host}/api/qt/clist/get"
+        assert kwargs["headers"]["Referer"] == "https://quote.eastmoney.com/"
+        return SimpleNamespace(raise_for_status=lambda: None,
+                               json=lambda: {"data": {"total": 1, "diff": [{"f12": "600001"}]}})
+    monkeypatch.setattr(provider, "_eastmoney_get", get)
+    assert len(provider._recommendation_pages(scope, fields="f12,f14", max_pages=5)) == 1
+
+
+def test_explicit_board_code_wins_over_ambiguous_name_cache(monkeypatch):
+    from contextlib import nullcontext
+    from src.services.screening_service import DsaEastMoneyHotspotProvider
+
+    provider = DsaEastMoneyHotspotProvider()
+    provider._recommendation_board_codes = {"同名主题": "BK9999"}
+    monkeypatch.setattr(provider, "_source_call_budget", nullcontext)
+    def pages(scope, **kwargs):
+        assert scope == "b:BK0001 f:!50"
+        return [{"f12": "600001", "f14": "样本"}]
+    monkeypatch.setattr(provider, "_recommendation_pages", pages)
+    result = provider.recommendation_constituents("同名主题", board_code="BK0001")
+    assert result["board_code"] == "BK0001"
+    with pytest.raises(ValueError, match="Invalid exact board"):
+        provider.recommendation_constituents("同名主题", board_code="BK0001 injected")
