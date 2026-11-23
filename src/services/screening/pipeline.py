@@ -161,7 +161,12 @@ def screen(
     if recommendation_policy is not None:
         if snapshot_df.attrs.get("fallback_used"):
             raise RuntimeError("Stale fallback snapshot cannot produce daily recommendations")
+        universe_count = len(snapshot_df)
         snapshot_df = filter_universe(snapshot_df, recommendation_policy)
+        degradation.append(
+            f"Recommendation universe: {universe_count} snapshot rows -> "
+            f"{len(snapshot_df)} verified eligible universe rows"
+        )
     effective_industry_map_files = (
         list(industry_map_files)
         if industry_map_files is not None
@@ -198,7 +203,7 @@ def screen(
 
     # 3. L1 hard filter. If a strategy needs daily features, first apply only
     # snapshot-safe filters, then enrich a narrowed candidate pool.
-    if explain_filters:
+    if explain_filters or recommendation_policy is not None:
         snapshot_waterfall = hard_filter_waterfall(snapshot_df, snapshot_filters)
         if snapshot_waterfall:
             degradation.append(
@@ -285,7 +290,7 @@ def screen(
                 suffix = f" | +{len(daily_errors) - 5} more" if len(daily_errors) > 5 else ""
                 degradation.append(f"Daily K-line enrichment row errors: {sample}{suffix}")
             if daily_needed:
-                if explain_filters:
+                if explain_filters or recommendation_policy is not None:
                     daily_waterfall = hard_filter_waterfall(enriched, screening.hard_filters)
                     if daily_waterfall:
                         degradation.append(
@@ -335,7 +340,12 @@ def screen(
         )
 
     if recommendation_policy is not None:
+        risk_input_count = len(df)
         df = filter_risk(df, recommendation_policy["group"])
+        degradation.append(
+            f"Recommendation risk band {recommendation_policy['group']}: "
+            f"{risk_input_count} -> {len(df)} candidates"
+        )
         after_filter_count = len(df)
         if df.empty:
             return ScreenResult(
@@ -350,12 +360,12 @@ def screen(
     # 5. Take Top K for LLM ranking
     top_k = min(
         max(output_count * config.llm_candidate_multiplier, output_count),
-        config.llm_max_candidates,
+        max(config.llm_max_candidates, output_count) if recommendation_policy is not None else config.llm_max_candidates,
         len(df),
     )
     df_top = df.head(top_k)
     if recommendation_policy is not None:
-        df_top = diverse_frame(df, top_k, recommendation_policy)
+        df_top = diverse_frame(df, top_k, recommendation_policy, research=True)
 
     # 6. Build Pick list
     picks = _df_to_picks(df_top)
@@ -549,7 +559,7 @@ def screen(
         analyzer_names=analyzer_names,
     )
     picks = selection_variant.picks
-    if recommendation_policy is not None:
+    if recommendation_policy is not None and not recommendation_policy.get("defer_final_selection"):
         topics = dict(zip(df_top["code"], df_top["recommendation_topic"]))
         by_code = {pick.code: pick for pick in picks}
         rows = [{"code": pick.code, "name": pick.name, "industry": pick.industry,
