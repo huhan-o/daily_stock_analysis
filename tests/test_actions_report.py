@@ -264,12 +264,15 @@ def test_missing_and_invalid_state(tmp_path):
 def test_workflow_exposes_modes_safely_and_history_is_opt_in():
     text = (ROOT / ".github/workflows/00-daily-analysis.yml").read_text()
     workflow = yaml.load(text, Loader=yaml.BaseLoader)
-    assert workflow["on"]["schedule"] == [{"cron": "0 23 * * 0-4"}]
+    assert workflow["on"]["schedule"] == [
+        {"cron": "7 11 * * 1-5"}, {"cron": "37 12 * * 1-5"}, {"cron": "17 14 * * 1-5"},
+    ]
     inputs = workflow["on"]["workflow_dispatch"]["inputs"]
     assert set(inputs["mode"]["options"]) == set(batch.MODES)
     assert set(inputs["screening_strategy"]["options"]) == set(batch.STRATEGIES)
     assert len(inputs) <= 10
-    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["permissions"] == {"contents": "read", "actions": "read"}
+    assert "guard" in workflow["jobs"]
     steps = workflow["jobs"]["analyze"]["steps"]
     execution = next(s for s in steps if s.get("id") == "analysis")
     calendar_check = next(s for s in steps if s.get("id") == "cn-trading-day")
