@@ -7,7 +7,8 @@ from src.services.screening.recommendations import GROUPS, diverse_rows, finite,
 def hotspot_members(service, diagnostics=None):
     # The first 12 ranked boards may include losers and overlapping themes.
     # Inspect a wider fresh list, but bound expensive constituent lookups.
-    payload = service.hotspots(top=50, refresh=True, include_details=False)
+    discover = getattr(service, "recommendation_hotspots", service.hotspots)
+    payload = discover(top=50, refresh=True, include_details=False)
     members, errors = {}, list(payload.get("source_errors") or [])
     if payload.get("stale") or payload.get("cache_used"):
         return {}, [*errors, "热点快照过期或使用缓存，未用于热点推荐。"]
