@@ -1795,7 +1795,9 @@ def _call_screening_screen(
             raise ValueError("Unknown recommendation risk group")
         pipeline_context["recommendations"] = recommendation_policy
         pipeline_config.daily_enrich_enabled = True
-        pipeline_config.daily_enrich_max_candidates = 48
+        # A 48-row pre-risk pool starved the strict low-volatility group.
+        # Keep requests bounded; this does not expand paid news research.
+        pipeline_config.daily_enrich_max_candidates = 240
 
     daily_history_fetcher = _build_screening_dsa_daily_history_fetcher()
     with _screening_litellm_headers(config):
