@@ -242,6 +242,7 @@ def test_research_pool_balances_themes_without_spending_final_quotas():
     research = diverse_frame(frame, 12, policy, research=True)
     assert len(research) == 12
     assert {"600100", "600101"}.issubset(set(research.code))
+    assert research.code.tolist()[:3] == ["600000", "600100", "600101"]
     assert sum(research.industry == "银行") == 10
     # Final portfolio constraints remain strict.
     assert len(diverse_frame(frame, 12, policy)) == 2
@@ -329,3 +330,23 @@ def test_real_pipeline_keeps_thirty_reserves_despite_twelve_model_cap(monkeypatc
     # The final report, not the research engine, enforces max three per theme.
     rows = [{"code": pick.code, "recommendation_topic": "机器人"} for pick in result.picks]
     assert len(diverse_rows(rows, 10)) == 3
+
+
+def test_recommendation_post_rank_only_reuses_research_without_new_searches(monkeypatch):
+    from src.services import screening_service as service
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("post-rank must not spend a second news budget")
+    monkeypatch.setattr(service, "_build_dsa_candidate_context", forbidden)
+    candidates = [{"code": str(600000+i), "name": f"股票{i}"} for i in range(30)]
+    cached = {"dsa_context": {"enriched": True, "news_included": True,
+                              "events_included": True, "warnings": []},
+              "dsa_news": [{"title": "已研究新闻"}]}
+    enriched, metadata = service._enrich_candidates_with_dsa(
+        candidates, max_candidates=12, cache_only=True,
+        candidate_context_cache={"600029": cached})
+    assert len(enriched) == 30
+    assert enriched[-1]["dsa_news"] == cached["dsa_news"]
+    assert metadata["cache_only"] is True
+    assert metadata["enriched_count"] == metadata["requested_count"] == 1
+    assert metadata["warnings"] == []
