@@ -2131,7 +2131,10 @@ class GeminiAnalyzer:
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
-- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。"""
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
+- 量比口径：<0.8 为缩量，0.8–1.5 为平量/正常，1.5–2.5 为温和放量，>2.5 为明显放量；不得把接近 1.0 的量比标成放量或缩量。
+- 盘前或非交易日展示上一完整交易日数据时，标题与正文必须写明具体日期（如“2026-11-24 完整交易日行情”），不得写作“当日行情”或暗示为今日已发生成交。
+- 行情、指数或技术字段缺失、为 nan/N/A 时，不得输出 nan，也不得据此推断涨跌方向；应写明“数据缺失”并降低结论确定性。"""
 
     SYSTEM_PROMPT = """你是一位{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
 
@@ -2317,7 +2320,10 @@ class GeminiAnalyzer:
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
-- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。"""
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
+- 量比口径：<0.8 为缩量，0.8–1.5 为平量/正常，1.5–2.5 为温和放量，>2.5 为明显放量；不得把接近 1.0 的量比标成放量或缩量。
+- 盘前或非交易日展示上一完整交易日数据时，标题与正文必须写明具体日期（如“2026-11-24 完整交易日行情”），不得写作“当日行情”或暗示为今日已发生成交。
+- 行情、指数或技术字段缺失、为 nan/N/A 时，不得输出 nan，也不得据此推断涨跌方向；应写明“数据缺失”并降低结论确定性。"""
 
     # English templates (REPORT_LANGUAGE=en/ko). They mirror LEGACY_DEFAULT_SYSTEM_PROMPT /
     # SYSTEM_PROMPT section by section so smaller models are not biased toward Chinese output
@@ -2453,7 +2459,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 - Only give Sell/Reduce after a break below key support, persistent main capital outflow, or a clear increase in risk.
 - `dashboard.phase_decision` must contain all seven fields; intraday, lunch break and near the close must give the current action, watch conditions and the next checkpoint.
 - The optional display field `dashboard.signal_attribution` (six fields) is recommended; explain what drives the recommendation, including the contribution of technical indicators, news sentiment, fundamentals and market conditions, and the strongest bullish/bearish signals.
-- Pre-market, on non-trading days or in an unknown phase, never fabricate today's intraday move; when quote/daily_bars/technical is stale, fallback, missing, fetch_failed, partial or estimated, `confidence_level` must not be High."""
+- Pre-market, on non-trading days or in an unknown phase, never fabricate today's intraday move; when quote/daily_bars/technical is stale, fallback, missing, fetch_failed, partial or estimated, `confidence_level` must not be High.
+- Volume-ratio convention: <0.8 is shrinking volume, 0.8–1.5 is normal, 1.5–2.5 is moderate expansion, >2.5 is clear expansion; never label a ratio near 1.0 as expanding or shrinking.
+- Pre-market or non-trading reports showing the last completed session must state its exact date; never title it today's session or imply today's trades already happened.
+- Never print nan or N/A as if it were a valid market move; when index or technical fields are missing, state that data is unavailable and lower confidence."""
 
     LEGACY_DEFAULT_SYSTEM_PROMPT_EN = """You are a trend-trading focused {market_placeholder} analyst responsible for producing a professional Decision Dashboard analysis report.
 
