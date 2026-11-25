@@ -119,7 +119,12 @@ def _compact_screening_diagnostics(group: dict) -> list[str]:
         elif "AkShare board" in text or "AkShare 板块" in text:
             lines.append("备用板块目录读取失败。")
         elif "热点" in text or "hotspot" in text.lower():
-            lines.append(text[:140] + ("。" if len(text) <= 140 and not text.endswith("。") else "…"))
+            snippet = text[:140]
+            if len(text) > 140:
+                snippet += "…"
+            elif not snippet.endswith("。"):
+                snippet += "。"
+            lines.append(snippet)
     return list(dict.fromkeys(lines))[:6]
 
 
