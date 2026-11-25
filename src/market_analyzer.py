@@ -985,11 +985,29 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if getattr_static(self.analyzer, "generate_text_with_metadata", missing) is not missing:
             method = getattr(self.analyzer, "generate_text_with_metadata", None)
             if callable(method):
-                return method(
-                    prompt,
-                    max_tokens=8192,
-                    temperature=0.7,
-                )
+                try:
+                    return method(
+                        prompt,
+                        max_tokens=8192,
+                        temperature=0.7,
+                    )
+                except Exception as exc:
+                    message = str(exc).lower()
+                    if "参数 stream" not in message and "stream 的取值" not in message and "stream parameter" not in message:
+                        raise
+                    logger.warning(
+                        "Market review non-stream request rejected by gateway; retrying with streaming: %s",
+                        exc,
+                    )
+                    try:
+                        return method(
+                            prompt,
+                            max_tokens=8192,
+                            temperature=0.7,
+                            stream=True,
+                        )
+                    except TypeError:
+                        raise exc
 
         if getattr_static(self.analyzer, "generate_text", missing) is missing:
             raise AttributeError(
