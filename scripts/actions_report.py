@@ -70,6 +70,67 @@ def diagnostics(data: dict) -> list[str]:
     return lines
 
 
+_FILTER_LABELS = {
+    "amount_min": "成交额下限", "price_min": "价格下限", "price_max": "价格上限",
+    "market_cap_min": "市值下限", "pe_ttm_min": "PE下限", "pe_ttm_max": "PE上限",
+    "pb_min": "PB下限", "change_60d_min": "60日涨幅下限", "change_60d_max": "60日涨幅上限",
+    "signal_score_min": "信号分下限", "range_20d_pct_max": "20日振幅上限",
+    "volatility_20d_pct_max": "20日波动率上限", "max_drawdown_20d_pct_min": "20日回撤下限",
+    "atr_20_pct_max": "ATR上限", "turnover_rate_min": "换手下限", "volume_ratio_min": "量比下限",
+}
+
+_LLM_REASON_LABELS = {"call_failed": "服务调用失败", "timeout": "调用超时"}
+
+
+def _compact_screening_diagnostics(group: dict) -> list[str]:
+    """Human-readable diagnostics; raw engineering logs stay in the full report."""
+    raw = list(dict.fromkeys(
+        str(value) for key in ("warnings", "degradation", "source_errors")
+        for value in group.get(key) or [] if str(value).strip()
+    ))
+    lines = []
+    reason = str(group.get("llm_failure_reason") or "")
+    if reason:
+        lines.append("模型重排未完成（" + _LLM_REASON_LABELS.get(reason, reason)
+                     + "），本组按规则排序，不代表模型观点。")
+    elif group.get("ranking_mode") and group.get("ranking_mode") != "llm":
+        lines.append("模型重排未完成，本组按规则排序。")
+    for text in raw:
+        if text.startswith("Daily K-line enrichment attempted"):
+            match = re.search(r"attempted (\d+) candidates, succeeded (\d+) of (\d+)", text)
+            if match:
+                lines.append(f"日线核验：尝试 {match.group(1)} 只，成功 {match.group(2)} 只（初筛 {match.group(3)} 只）。")
+        elif text.startswith("Daily K-line source health"):
+            lines.append("日线数据源有失败记录，已按可用来源完成。")
+        elif text.startswith("Recommendation risk band"):
+            match = re.search(r": (\d+) -> (\d+)", text)
+            if match:
+                lines.append(f"风险分档：{match.group(1)} 只 → {match.group(2)} 只。")
+        elif "Snapshot source fallback" in text:
+            lines.append("行情快照主源限流，已使用备用快照。")
+        elif text.startswith("Daily hard-filter rejections"):
+            parts = re.findall(r"([a-zA-Z0-9_]+) removed (\d+)", text)
+            top = sorted(parts, key=lambda item: int(item[1]), reverse=True)[:3]
+            if top:
+                lines.append("日线硬筛淘汰：" + "、".join(
+                    f"{_FILTER_LABELS.get(key, key)} {value} 只" for key, value in top) + "。")
+        elif "board directory failed" in text or "板块目录" in text:
+            lines.append("选股板块目录读取失败，已尝试备用来源。")
+        elif "AkShare board" in text or "AkShare 板块" in text:
+            lines.append("备用板块目录读取失败。")
+        elif "热点" in text or "hotspot" in text.lower():
+            lines.append(text[:140] + ("。" if len(text) <= 140 and not text.endswith("。") else "…"))
+    return list(dict.fromkeys(lines))[:6]
+
+
+def _recommendation_label(item: dict) -> str:
+    topic = str(item.get("recommendation_topic") or "").strip()
+    industry = str(item.get("industry") or "").strip()
+    concepts = str(item.get("concepts") or "").strip()
+    first_concept = next((part.strip() for part in re.split(r"[、,，]", concepts) if part.strip()), "")
+    return topic or industry or first_concept or "未分类"
+
+
 def render_screening(data: dict, requested: int | None = None, *, compact: bool = False) -> tuple[str, int]:
     candidates = data.get("candidates") or []
     def actionable(value):
@@ -169,10 +230,9 @@ def render_recommendations(data: dict, *, compact: bool = False) -> tuple[str, i
                           f"非本组或重复 {selection.get('universe_or_duplicate', 0)}，"
                           f"受分散约束或目标名额限制未选 {selection.get('not_selected_after_caps_or_target', 0)}。"])
         if compact:
-            notes = list(dict.fromkeys(str(value) for key in ("warnings", "degradation", "source_errors")
-                                       for value in group.get(key) or []))
+            notes = _compact_screening_diagnostics(group)
             if notes:
-                lines.extend(["", "数据与筛选诊断：" + cell("；".join(notes[:8]))])
+                lines.extend(["", "数据与筛选诊断："] + [f"- {cell(note)}" for note in notes])
             for key, label in (("llm_market_view", "市场判断（模型）"), ("llm_portfolio_risk", "本组风险")):
                 if group.get(key):
                     lines.extend(["", f"{label}：{cell(group[key])}"])
@@ -180,7 +240,7 @@ def render_recommendations(data: dict, *, compact: bool = False) -> tuple[str, i
                           "| --- | --- | --- | --- | --- | --- |"])
             for item in candidates:
                 plan = item["technical_plan"]
-                fields = [f"{item['name']}（{item['code']}）", item.get("recommendation_topic") or item.get("industry") or "行业待核验",
+                fields = [f"{item['name']}（{item['code']}）", _recommendation_label(item),
                           item["recommendation_reason"], f"{plan['entry']:.2f}", f"{plan['stop_loss']:.2f}", f"{plan['take_profit']:.2f}"]
                 lines.append("| " + " | ".join(cell(value) for value in fields) + " |")
             dates = sorted({item["technical_plan"]["as_of"] for item in candidates})
