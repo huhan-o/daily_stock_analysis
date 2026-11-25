@@ -11,6 +11,7 @@
 """
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -39,6 +40,15 @@ from src.services.intelligence_service import IntelligenceService
 from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
+
+
+def _finite_number(value: Any) -> Optional[float]:
+    """Return a finite float or None; never let NaN leak into reports or scores."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
 
 _LEGACY_ANALYZER_BACKEND_ID = "legacy_analyzer"
 
@@ -538,6 +548,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 "mild_down": "mild losses",
                 "strong_down": "clear weakness",
                 "range": "range-bound trading",
+                "unknown": "data unavailable",
             }
         else:
             mapping = {
@@ -546,6 +557,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 "mild_down": "小幅下跌",
                 "strong_down": "明显下跌",
                 "range": "震荡整理",
+                "unknown": "数据不足，方向待确认",
             }
         return mapping[mood_key]
 
@@ -589,21 +601,38 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
             if data_list:
                 for item in data_list:
-                    index = MarketIndex(
-                        code=item['code'],
-                        name=item['name'],
-                        current=item['current'],
-                        change=item['change'],
-                        change_pct=item['change_pct'],
-                        open=item['open'],
-                        high=item['high'],
-                        low=item['low'],
-                        prev_close=item['prev_close'],
-                        volume=item['volume'],
-                        amount=item['amount'],
-                        amplitude=item['amplitude']
-                    )
-                    indices.append(index)
+                    current = _finite_number(item.get("current"))
+                    if current is None or current <= 0:
+                        # Pre-open or broken sources may return NaN; omit instead of printing nan.
+                        continue
+                    prev_close = _finite_number(item.get("prev_close"))
+                    change_pct = _finite_number(item.get("change_pct"))
+                    change = _finite_number(item.get("change"))
+                    if prev_close is not None and prev_close > 0:
+                        change = current - prev_close
+                        change_pct = change / prev_close * 100
+                    elif change_pct is None:
+                        change_pct = 0.0
+                    high = _finite_number(item.get("high")) or current
+                    low = _finite_number(item.get("low")) or current
+                    open_value = _finite_number(item.get("open")) or current
+                    amplitude = _finite_number(item.get("amplitude"))
+                    if amplitude is None and prev_close is not None and prev_close > 0:
+                        amplitude = (high - low) / prev_close * 100
+                    indices.append(MarketIndex(
+                        code=str(item.get("code") or ""),
+                        name=str(item.get("name") or ""),
+                        current=current,
+                        change=change or 0.0,
+                        change_pct=change_pct,
+                        open=open_value,
+                        high=high,
+                        low=low,
+                        prev_close=prev_close or 0.0,
+                        volume=_finite_number(item.get("volume")) or 0.0,
+                        amount=_finite_number(item.get("amount")) or 0.0,
+                        amplitude=amplitude or 0.0,
+                    ))
 
             if not indices:
                 logger.warning("[大盘] %s action=get_main_indices status=empty", self._log_context())
@@ -1227,7 +1256,15 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         participation = overview.up_count + overview.down_count
         up_ratio = overview.up_count / participation if participation else 0.0
         limit_spread = overview.limit_up_count - overview.limit_down_count
-        if isinstance(light, dict) and score is not None:
+        if isinstance(light, dict) and light.get("data_quality") == "unavailable":
+            lines.extend(
+                [
+                    "- **盘面信号**：数据不足，暂不给出进攻/防守结论",
+                    f"- **信号依据**：{'；'.join(light['reasons'])}",
+                    "- **操作建议**：等待主要指数与市场宽度数据恢复后再判断方向。",
+                ]
+            )
+        elif isinstance(light, dict) and score is not None:
             lines.extend(
                 [
                     f"- **盘面信号**：{score}/100（{label}，{light['label']}）",
@@ -1252,6 +1289,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
     def build_market_light_snapshot(self, overview: MarketOverview) -> Dict[str, Any]:
         """Build a deterministic market-light snapshot from structured breadth data."""
         scores = self._build_market_light_scores(overview)
+        unavailable = scores.get("data_quality") == "unavailable"
         score = int(scores["score"])
         temperature_label = str(scores["temperature_label"])
         if score >= 60:
@@ -1266,11 +1304,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 "green": "risk-on",
                 "yellow": "balanced",
                 "red": "risk-off",
+                "unknown": "data unavailable",
             }
             guidance_map = {
                 "green": "Risk appetite is acceptable; focus on leading themes and position discipline.",
                 "yellow": "Signals are mixed; keep position sizing moderate and wait for confirmation.",
                 "red": "Risk is elevated; prioritize drawdown control and avoid chasing weak rebounds.",
+                "unknown": "Major-index or breadth data is missing; no directional conclusion.",
             }
             reasons = self._build_market_light_reasons_en(overview, score)
         else:
@@ -1278,11 +1318,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 "green": "可进攻",
                 "yellow": "需观察",
                 "red": "偏防守",
+                "unknown": "数据不足",
             }
             guidance_map = {
                 "green": "风险偏好尚可，关注主线延续与仓位纪律。",
                 "yellow": "信号分化，控制仓位并等待量价确认。",
                 "red": "风险偏高，优先控制回撤，避免追高弱反弹。",
+                "unknown": "主要指数或市场宽度数据缺失，暂不给出方向性结论。",
             }
             reasons = self._build_market_light_reasons_zh(overview, score)
 
@@ -1290,11 +1332,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             region=self.region,
             trade_date=overview.date,
             status=status,
-            label=label_map[status],
+            label="数据不足" if unavailable else label_map[status],
             score=score,
             temperature_label=temperature_label,
             reasons=reasons,
-            guidance=guidance_map[status],
+            guidance=guidance_map["unknown"] if unavailable else guidance_map[status],
             dimensions=scores["dimensions"],
             data_quality=str(scores["data_quality"]),
         )
@@ -1311,8 +1353,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，亏钱效应较强")
             else:
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，市场分化")
-        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
-        if index_changes:
+        index_changes = [value for idx in overview.indices if (value := _finite_number(idx.change_pct)) is not None]
+        if len(index_changes) >= 2:
             avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"主要指数平均涨跌幅 {avg_change:+.2f}%")
         if overview.limit_up_count or overview.limit_down_count:
@@ -1320,7 +1362,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if not reasons and overview.total_amount:
             reasons.append(f"成交额 {overview.total_amount:.0f} 亿，{self._describe_turnover(overview.total_amount)}")
         if not reasons:
-            reasons.append("结构化涨跌数据有限，按可用行情综合判断")
+            reasons.append("主要指数涨跌幅与市场宽度数据缺失，暂不判断大盘方向")
         return reasons[:4]
 
     def _build_market_light_reasons_en(self, overview: MarketOverview, score: int) -> List[str]:
@@ -1364,8 +1406,12 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             arrow = self._get_index_change_arrow(idx.change_pct)
             amount_raw = idx.amount or 0.0
             amount_str = self._format_turnover_value(amount_raw)
+            current = _finite_number(idx.current)
+            change_pct = _finite_number(idx.change_pct)
+            current_text = f"{current:.2f}" if current is not None else "数据缺失"
+            change_text = f"{arrow} {change_pct:+.2f}%" if change_pct is not None else "涨跌幅缺失"
             lines.append(
-                f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | "
+                f"| {idx.name} | {current_text} | {change_text} | "
                 f"{self._format_optional_number(idx.open)} | {self._format_optional_number(idx.high)} | "
                 f"{self._format_optional_number(idx.low)} | {self._format_optional_pct(idx.amplitude)} | {amount_str} |"
             )
@@ -1464,11 +1510,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     @staticmethod
     def _format_optional_number(value: float) -> str:
-        return "N/A" if value in (None, 0, 0.0) else f"{value:.2f}"
+        numeric = _finite_number(value)
+        return "N/A" if numeric in (None, 0.0) else f"{numeric:.2f}"
 
     @staticmethod
     def _format_optional_pct(value: float) -> str:
-        return "N/A" if value in (None, 0, 0.0) else f"{value:.2f}%"
+        numeric = _finite_number(value)
+        return "N/A" if numeric in (None, 0.0) else f"{numeric:.2f}%"
 
     @staticmethod
     def _format_signed_pct(value: Any) -> str:
@@ -1513,8 +1561,12 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if breadth_available:
             breadth_score = int(overview.up_count / participants * 100)
 
-        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
-        index_available = bool(overview.indices and index_changes)
+        index_changes = [
+            value for idx in overview.indices
+            if (value := _finite_number(idx.change_pct)) is not None
+        ]
+        # A single index (or a NaN placeholder) is not enough to score direction.
+        index_available = len(index_changes) >= 2
         index_score = 50
         if index_available:
             avg_change = sum(index_changes) / len(index_changes)
@@ -1660,7 +1712,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         indices_text = ""
         for idx in overview.indices:
             direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
-            indices_text += f"- {idx.name}: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
+            _current = _finite_number(idx.current)
+            _change = _finite_number(idx.change_pct)
+            if _current is not None:
+                _pct = f"{direction}{abs(_change):.2f}%" if _change is not None else "涨跌幅缺失"
+                indices_text += f"- {idx.name}: {_current:.2f} ({_pct})\n"
         
         # 板块信息
         top_sectors_text = self._format_ranking_summary(overview.top_sectors)
@@ -1904,23 +1960,34 @@ Output the report content directly, no extra commentary.
             ),
             None,
         )
-        if mood_index:
-            if mood_index.change_pct > 1:
-                market_mood = self._get_market_mood_text("strong_up", template_language)
-            elif mood_index.change_pct > 0:
-                market_mood = self._get_market_mood_text("mild_up", template_language)
-            elif mood_index.change_pct > -1:
-                market_mood = self._get_market_mood_text("mild_down", template_language)
-            else:
-                market_mood = self._get_market_mood_text("strong_down", template_language)
+        mood_change = _finite_number(mood_index.change_pct) if mood_index else None
+        if mood_change is None:
+            finite_changes = sorted(
+                value for idx in overview.indices
+                if (value := _finite_number(idx.change_pct)) is not None
+            )
+            if len(finite_changes) >= 2:
+                mood_change = finite_changes[len(finite_changes) // 2]
+        if mood_change is None:
+            market_mood = self._get_market_mood_text("unknown", template_language)
+        elif mood_change > 1:
+            market_mood = self._get_market_mood_text("strong_up", template_language)
+        elif mood_change > 0:
+            market_mood = self._get_market_mood_text("mild_up", template_language)
+        elif mood_change > -1:
+            market_mood = self._get_market_mood_text("mild_down", template_language)
         else:
-            market_mood = self._get_market_mood_text("range", template_language)
+            market_mood = self._get_market_mood_text("strong_down", template_language)
         
         # 指数行情（简洁格式）
         indices_text = ""
         for idx in overview.indices[:4]:
-            marker = self._get_index_change_arrow(idx.change_pct)
-            indices_text += f"- **{idx.name}**: {idx.current:.2f} ({marker} {idx.change_pct:+.2f}%)\n"
+            current = _finite_number(idx.current)
+            change_pct = _finite_number(idx.change_pct)
+            if current is None:
+                continue
+            change_text = f"{self._get_index_change_arrow(change_pct)} {change_pct:+.2f}%" if change_pct is not None else "涨跌幅缺失"
+            indices_text += f"- **{idx.name}**: {current:.2f} ({change_text})\n"
         
         # 板块信息
         separator = ", " if template_language == "en" else "、"
@@ -2145,7 +2212,10 @@ if __name__ == "__main__":
     print(f"日期: {overview.date}")
     print(f"指数数量: {len(overview.indices)}")
     for idx in overview.indices:
-        print(f"  {idx.name}: {idx.current:.2f} ({idx.change_pct:+.2f}%)")
+        _current = _finite_number(idx.current)
+        _change = _finite_number(idx.change_pct)
+        if _current is not None:
+            print(f"  {idx.name}: {_current:.2f} " + (f"({_change:+.2f}%)" if _change is not None else "(涨跌幅缺失)"))
     print(f"上涨: {overview.up_count} | 下跌: {overview.down_count}")
     print(f"成交额: {overview.total_amount:.0f}亿")
     
