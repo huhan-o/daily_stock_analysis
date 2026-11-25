@@ -606,13 +606,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                         # Pre-open or broken sources may return NaN; omit instead of printing nan.
                         continue
                     prev_close = _finite_number(item.get("prev_close"))
-                    change_pct = _finite_number(item.get("change_pct"))
-                    change = _finite_number(item.get("change"))
-                    if prev_close is not None and prev_close > 0:
-                        change = current - prev_close
-                        change_pct = change / prev_close * 100
-                    elif change_pct is None:
-                        change_pct = 0.0
+                    if prev_close is None or prev_close <= 0:
+                        # A 0.00% quote without a valid previous close is unverifiable.
+                        continue
+                    change = current - prev_close
+                    change_pct = change / prev_close * 100
                     high = _finite_number(item.get("high")) or current
                     low = _finite_number(item.get("low")) or current
                     open_value = _finite_number(item.get("open")) or current
