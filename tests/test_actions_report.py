@@ -481,3 +481,22 @@ def test_compact_factor_fallback_does_not_expose_analyzer_labels():
     assert content.count("因子筛选入围，模型未提供入选理由，需复核") == 10
     assert "value_quality" not in content and "controlled_reversal" not in content
     assert content.count("参考入场 ") == 10
+
+
+def test_compact_diagnostics_translate_logs_and_use_real_industry():
+    group = {
+        "llm_failure_reason": "call_failed",
+        "warnings": [
+            "Daily K-line enrichment attempted 240 candidates, succeeded 240 of 541 snapshot-filtered candidates",
+            "Recommendation risk band low: 72 -> 12 candidates",
+            "Snapshot source fallback: tushare: rate limited",
+        ],
+        "candidates": [],
+    }
+    text = "\n".join(batch._compact_screening_diagnostics(group))
+    assert "模型重排未完成" in text
+    assert "日线核验" in text and "风险分档" in text
+    assert "attempted" not in text and "removed" not in text
+    assert batch._recommendation_label({"industry": "银行"}) == "银行"
+    assert batch._recommendation_label({"concepts": "机器人、减速器"}) == "机器人"
+    assert batch._recommendation_label({}) == "未分类"
