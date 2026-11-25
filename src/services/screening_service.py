@@ -1134,6 +1134,12 @@ class ScreeningService:
                 provider._recommendation_loaded_directories.add(kind)
             except Exception as exc:
                 errors.append(f"Live {kind} board directory failed: {type(exc).__name__}: {str(exc)[:240]}")
+        if not boards:
+            try:
+                boards = provider._recommendation_boards_via_akshare()
+                errors.append("EastMoney direct board directory failed; used AkShare board directory.")
+            except Exception as exc:
+                errors.append(f"AkShare board directory failed: {type(exc).__name__}: {str(exc)[:200]}")
         boards.sort(key=lambda item: item["change_pct"], reverse=True)
         return {"hotspots": boards[:max(1, min(int(top), 50))], "source_errors": errors,
                 "provider_used": "eastmoney_direct_board_snapshot", "cache_used": False,
@@ -2147,6 +2153,19 @@ class DsaEastMoneyHotspotProvider:
         "国企改革",
         "专精特新",
         "其他",
+        "题材股",
+        "最近多板",
+        "东方财富热股",
+        "热股",
+        "连板",
+        "涨停",
+        "跌停",
+        "破净",
+        "增持计划",
+        "标准普尔",
+        "深成500",
+        "茅指数",
+        "科创板做市商",
         "Ⅱ",
         "Ⅲ",
     )
@@ -2865,7 +2884,79 @@ class DsaEastMoneyHotspotProvider:
             if _env_text(row.get("项目"))
         }
 
+    def _recommendation_boards_via_akshare(self) -> List[Dict[str, Any]]:
+        """Board directory from the maintained AkShare endpoints."""
+        import akshare as ak
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
+
+        if not hasattr(self, "_recommendation_board_codes"):
+            self._recommendation_board_codes = {}
+        boards: List[Dict[str, Any]] = []
+        last_error = None
+        for fetch in (ak.stock_board_concept_name_em, ak.stock_board_industry_name_em):
+            try:
+                frame = _akshare_call_with_timeout(
+                    fetch, timeout=self._akshare_timeout_seconds(),
+                    call_name=f"recommendation.{getattr(fetch, '__name__', 'boards')}")
+            except Exception as exc:
+                last_error = exc
+                continue
+            if frame is None or getattr(frame, "empty", True):
+                continue
+            for _, row in frame.iterrows():
+                name = _env_text(row.get("板块名称") or row.get("name"))
+                code = _env_text(row.get("板块代码") or row.get("code"))
+                change = _safe_float(row.get("涨跌幅") if "涨跌幅" in frame.columns else row.get("change_pct"))
+                if not name or not re.fullmatch(r"BK\d+", code):
+                    continue
+                self._recommendation_board_codes[name] = code
+                if change is not None and change > 0 and not self._is_broad_board(name):
+                    boards.append({"topic": name, "canonical_topic": name, "change_pct": change,
+                                   "board_code": code, "source": "akshare_live_board_snapshot"})
+        if not boards and last_error is not None:
+            raise last_error
+        return boards
+
     def recommendation_constituents(self, topic: str, *, top_stocks: int = 500, board_code: str = "") -> Dict[str, Any]:
+        """Read exact live board members; AkShare is the maintained fallback."""
+        try:
+            return self._recommendation_constituents_direct(
+                topic, top_stocks=top_stocks, board_code=board_code)
+        except Exception as direct_exc:
+            import akshare as ak
+            from data_provider.akshare_fetcher import _akshare_call_with_timeout
+
+            known = getattr(self, "_recommendation_board_codes", {}).get(topic)
+            symbols = [code for code in (board_code, known) if code] or [topic]
+            last_error = direct_exc
+            for fetch in (ak.stock_board_concept_cons_em, ak.stock_board_industry_cons_em):
+                for symbol in symbols:
+                    try:
+                        frame = _akshare_call_with_timeout(
+                            fetch, symbol=symbol, timeout=self._akshare_timeout_seconds(),
+                            call_name=f"recommendation.{getattr(fetch, '__name__', 'cons')}")
+                    except Exception as exc:
+                        last_error = exc
+                        continue
+                    records = self._normalize_constituent_records(frame)
+                    stocks, seen = [], set()
+                    for record in records:
+                        code = _env_text(record.get("code"))
+                        if not re.fullmatch(r"\d{6}", code) or code in seen:
+                            continue
+                        seen.add(code)
+                        stocks.append({"code": code, "name": _env_text(record.get("name")),
+                                       "source": f"akshare_live_constituents:{symbol}",
+                                       "stale": False, "fallback_used": False})
+                    if stocks:
+                        return {"topic": topic, "canonical_topic": topic,
+                                "board_code": symbols[0] if re.fullmatch(r"BK\d+", symbols[0]) else "",
+                                "stocks": stocks[:max(1, int(top_stocks))], "stock_count": len(stocks),
+                                "provider": "akshare_board_membership", "quality_status": "live",
+                                "stale": False, "fallback_used": False, "source_errors": []}
+            raise ValueError(f"AkShare board membership failed for {topic}: {type(last_error).__name__}")
+
+    def _recommendation_constituents_direct(self, topic: str, *, top_stocks: int = 500, board_code: str = "") -> Dict[str, Any]:
         """Read exact live board members; never substitute leaders or peers."""
         with self._source_call_budget():
             if not hasattr(self, "_recommendation_board_codes"):
