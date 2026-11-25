@@ -506,3 +506,21 @@ def test_explicit_board_code_wins_over_ambiguous_name_cache(monkeypatch):
     assert result["board_code"] == "BK0001"
     with pytest.raises(ValueError, match="Invalid exact board"):
         provider.recommendation_constituents("同名主题", board_code="BK0001 injected")
+
+
+def test_empty_recommendation_directory_reuses_hotspot_observation_source():
+    class Service:
+        def recommendation_hotspots(self, **kwargs):
+            return {"hotspots": [], "source_errors": ["direct directory failed"]}
+
+        def hotspots(self, **kwargs):
+            return {"hotspots": [{"topic": "机器人", "change_pct": 2.0}]}
+
+        def hotspot_detail(self, **kwargs):
+            return {"canonical_topic": "机器人", "stocks": [{"code": "600001"}]}
+
+    coverage = {}
+    members, errors = hotspot_members(Service(), coverage)
+    assert members["600001"]["topic"] == "机器人"
+    assert coverage == {"hotspot_boards": 1, "hotspot_members": 1}
+    assert any("同一来源" in error for error in errors)
