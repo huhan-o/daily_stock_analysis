@@ -633,11 +633,60 @@ def _call_llm(
                 last_error = exc
                 if _is_timeout_error(exc):
                     raise
+                if _is_stream_param_error(exc):
+                    try:
+                        stream_kwargs = dict(kwargs)
+                        stream_kwargs["stream"] = True
+                        stream_kwargs.pop("response_format", None)
+                        response = _call_screening_litellm_completion(
+                            lambda request_kwargs: litellm.completion(**request_kwargs),
+                            model=candidate_model,
+                            call_kwargs=stream_kwargs,
+                        )
+                        streamed = _consume_stream_completion_text(response)
+                        if streamed.strip():
+                            return streamed
+                    except Exception as stream_exc:
+                        last_error = stream_exc
                 continue
 
     if last_error is not None:
         raise last_error
     raise RuntimeError("No LLM model configured")
+
+
+def _is_stream_param_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in (
+        "参数 stream", "stream 的取值", "stream parameter",
+        "invalid value for 'stream'", 'invalid value for "stream"',
+    ))
+
+
+def _consume_stream_completion_text(stream_response: object) -> str:
+    parts: list[str] = []
+    try:
+        for chunk in stream_response:
+            choices = chunk.get("choices") if isinstance(chunk, dict) else getattr(chunk, "choices", None)
+            if not choices:
+                continue
+            choice = choices[0]
+            delta = choice.get("delta") if isinstance(choice, dict) else getattr(choice, "delta", None)
+            if delta is None:
+                continue
+            content = delta.get("content") if isinstance(delta, dict) else getattr(delta, "content", None)
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    text = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
+                    if isinstance(text, str):
+                        parts.append(text)
+    finally:
+        close = getattr(stream_response, "close", None)
+        if callable(close):
+            close()
+    return "".join(parts)
 
 
 def _extract_completion_text(response: object) -> str:
