@@ -191,7 +191,9 @@ def rank_candidates_with_metadata(
                 )
             except Exception as exc:
                 failure_reason = "timeout" if _is_timeout_error(exc) else "call_failed"
-                model_errors.append(f"{failure_reason}:{exc.__class__.__name__}")
+                model_errors.append(
+                    f"{failure_reason}:{exc.__class__.__name__}:{str(exc)[:300]}"
+                )
                 break
 
             parsed = _parse_ranking_response_detail(response, candidates)
