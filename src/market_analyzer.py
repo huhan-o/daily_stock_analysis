@@ -1976,15 +1976,20 @@ Output the report content directly, no extra commentary.
             ),
             None,
         )
+        finite_changes = sorted(
+            value for idx in overview.indices
+            if (value := _finite_number(idx.change_pct)) is not None
+        )
         mood_change = _finite_number(mood_index.change_pct) if mood_index else None
-        if mood_change is None:
-            finite_changes = sorted(
-                value for idx in overview.indices
-                if (value := _finite_number(idx.change_pct)) is not None
-            )
-            if len(finite_changes) >= 2:
-                mood_change = finite_changes[len(finite_changes) // 2]
-        if mood_change is None:
+        if mood_change is None and len(finite_changes) >= 2:
+            mood_change = finite_changes[len(finite_changes) // 2]
+        has_breadth = bool(overview.up_count or overview.down_count)
+        # A 股缺少宽度且只剩一个指数时，不能据此断言“明显下跌/上涨”。
+        mood_known = not (
+            mood_change is None
+            or (self.region == "cn" and not has_breadth and len(finite_changes) < 2)
+        )
+        if not mood_known:
             market_mood = self._get_market_mood_text("unknown", template_language)
         elif mood_change > 1:
             market_mood = self._get_market_mood_text("strong_up", template_language)
@@ -2095,9 +2100,14 @@ Market conditions can change quickly. The data above is for reference only and d
             if self.profile.has_market_stats
             else ""
         )
+        mood_phrase = (
+            f"整体呈现**{market_mood}**态势"
+            if mood_known
+            else "**数据不足，暂不判断方向**"
+        )
         return f"""## {overview.date} 大盘复盘
 
-> 今日{market_label}市场整体呈现**{market_mood}**态势，优先观察{summary_focus}。
+> 今日{market_label}市场{mood_phrase}，优先观察{summary_focus}。
 
 ### 一、盘面总览
 {market_summary_block}
