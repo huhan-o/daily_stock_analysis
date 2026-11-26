@@ -219,7 +219,12 @@ def render_recommendations(data: dict, *, compact: bool = False) -> tuple[str, i
     coverage = data.get("coverage") or {}
     if coverage:
         lines.extend(["", f"热点覆盖：本次检查 {coverage.get('hotspot_boards', 0)} 个上涨板块，"
-                      f"取得 {coverage.get('hotspot_members', 0)} 只去重成分股；未采用下跌板块或过期成分补数。"])
+                      f"取得 {coverage.get('hotspot_members', 0)} 只去重成分股；未采用下跌板块或过期成分补数。"
+                      "板块涨跌幅取与价格依据同一交易日的收盘数据。"])
+        if coverage.get("hotspot_boards", 0) == 0:
+            reason = next((str(item) for item in data.get("warnings") or [] if str(item).strip()), "")
+            if reason:
+                lines.extend([f"未取得上涨板块的原因：{cell(reason[:180])}"])
     partial = bool(data.get("warnings")) or len(data.get("groups") or []) != 3
     for group in data.get("groups") or []:
         candidates = group["candidates"]
