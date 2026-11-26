@@ -4,13 +4,42 @@ from src.services.screening.normalize import normalize_code, safe_text
 from src.services.screening.recommendations import GROUPS, diverse_rows, finite, sector
 
 
+def _usable_hotspot_payload(payload):
+    """A usable payload must be fresh and contain at least one positive board."""
+    if payload.get("stale") or payload.get("cache_used"):
+        return False
+    return any(
+        (finite(row.get("change_pct")) or 0) > 0
+        and not row.get("stale") and not row.get("fallback_used")
+        for row in payload.get("hotspots") or []
+    )
+
+
 def hotspot_members(service, diagnostics=None):
     # The first 12 ranked boards may include losers and overlapping themes.
     # Inspect a wider fresh list, but bound expensive constituent lookups.
-    discover = getattr(service, "recommendation_hotspots", service.hotspots)
+    discover = getattr(service, "recommendation_hotspots", None)
+    can_fallback = discover is not None
+    if discover is None:
+        discover = service.hotspots
     payload = discover(top=50, refresh=True, include_details=False)
-    members, errors = {}, list(payload.get("source_errors") or [])
+    errors = list(payload.get("source_errors") or [])
+    if can_fallback and not _usable_hotspot_payload(payload):
+        # 实时板块行情在盘前会返回 0 或空值；改用与热点观察同源的
+        # 上一交易日板块异动快照，避免高、中风险组被整体过滤为空。
+        try:
+            fallback = service.hotspots(top=50, refresh=True, include_details=False)
+        except Exception as exc:
+            errors.append(f"热点观察快照读取失败：{type(exc).__name__}")
+        else:
+            if _usable_hotspot_payload(fallback):
+                payload = fallback
+                errors.extend(fallback.get("source_errors") or [])
+                errors.append("实时板块目录未取得上涨板块，已回退到同一来源的热点观察快照。")
+    members = {}
     if payload.get("stale") or payload.get("cache_used"):
+        if diagnostics is not None:
+            diagnostics.update(hotspot_boards=0, hotspot_members=0)
         return {}, [*errors, "热点快照过期或使用缓存，未用于热点推荐。"]
     inspected = set()
     for row in payload.get("hotspots") or []:
