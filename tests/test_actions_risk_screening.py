@@ -524,3 +524,21 @@ def test_empty_recommendation_directory_reuses_hotspot_observation_source():
     assert members["600001"]["topic"] == "机器人"
     assert coverage == {"hotspot_boards": 1, "hotspot_members": 1}
     assert any("同一来源" in error for error in errors)
+
+
+def test_zero_hotspot_coverage_explains_source_failure_in_compact_report():
+    data = {
+        "requested": 30,
+        "candidates": [],
+        "warnings": ["实时板块目录未取得上涨板块，已回退到同一来源的热点观察快照。"],
+        "coverage": {"hotspot_boards": 0, "hotspot_members": 0},
+        "groups": [
+            {"title": "热点股票·高风险", "requested": 10, "candidates": []},
+            {"title": "热点股票·中风险", "requested": 10, "candidates": []},
+            {"title": "低风险股票", "requested": 10, "candidates": []},
+        ],
+    }
+    text, _ = render_recommendations(data, compact=True)
+    assert "板块涨跌幅取与价格依据同一交易日" in text
+    assert "未取得上涨板块的原因" in text
+    assert "实时板块目录未取得上涨板块" in text
